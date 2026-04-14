@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,29 @@ import zarr
 from zarr.codecs import BloscCodec, BloscShuffle
 
 import trace_viewer_server
+
+
+def decode_trace_binary(payload: bytes) -> dict[str, object]:
+    magic = payload[:4]
+    if magic != trace_viewer_server.TRACE_BINARY_MAGIC:
+        raise AssertionError("unexpected binary magic")
+
+    header_length, payload_offset = struct.unpack("<II", payload[4:12])
+    header = json.loads(payload[12 : 12 + header_length].decode("utf-8"))
+    body = np.frombuffer(payload[payload_offset:], dtype="<i2")
+    cursor = 0
+
+    for trace in header["traces"]:
+        length = trace["length"]
+        if header["mode"] == "raw":
+            trace["values"] = body[cursor : cursor + length].copy()
+            cursor += length
+        else:
+            trace["mins"] = body[cursor : cursor + length].copy()
+            cursor += length
+            trace["maxs"] = body[cursor : cursor + length].copy()
+            cursor += length
+    return header
 
 
 def create_fixture(recording_path: Path) -> Path:
@@ -107,6 +132,7 @@ class TraceViewerServerTests(unittest.TestCase):
             self.assertEqual(overview["mode"], "envelope")
             self.assertEqual(len(overview["traces"]), 2)
             self.assertEqual(overview["cache"], "miss")
+            self.assertEqual(overview["source"], "pyramid")
 
             overview_cached = service.overview(
                 {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
@@ -131,6 +157,20 @@ class TraceViewerServerTests(unittest.TestCase):
             self.assertEqual(detail_fractional["start"], 11)
             self.assertEqual(detail_fractional["end"], 30)
             self.assertEqual(detail_fractional["mode"], "raw")
+
+            overview_binary = decode_trace_binary(
+                service.overview_binary({"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]})
+            )
+            self.assertEqual(overview_binary["mode"], "envelope")
+            self.assertEqual(overview_binary["source"], "pyramid")
+            self.assertEqual(len(overview_binary["traces"]), 2)
+            self.assertIn("mins", overview_binary["traces"][0])
+
+            detail_binary = decode_trace_binary(
+                service.detail_binary({"start": ["0"], "end": ["20"], "width_px": ["200"], "channels": ["0,1"]})
+            )
+            self.assertEqual(detail_binary["mode"], "raw")
+            self.assertEqual(detail_binary["traces"][0]["values"].shape[0], 20)
 
     def test_write_json_ignores_client_disconnects(self) -> None:
         class FakeWfile:

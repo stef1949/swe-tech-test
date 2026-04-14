@@ -44,6 +44,9 @@ const COLORS = [
 const DRAG_REFRESH_INTERVAL_MS = 120;
 const DETAIL_BUFFER_MARGIN_RATIO = 1;
 const DETAIL_BUFFER_REFRESH_MARGIN_RATIO = 0.3;
+const TRACE_BINARY_CONTENT_TYPE = "application/vnd.traceviewer.binary";
+const TRACE_BINARY_MAGIC = "TVB1";
+const textDecoder = new TextDecoder();
 
 function setStatus(kind, label) {
   statusBadge.textContent = label;
@@ -219,6 +222,54 @@ async function fetchJson(path, controller) {
   return response.json();
 }
 
+function parseBinaryTracePayload(buffer) {
+  const view = new DataView(buffer);
+  const magic = textDecoder.decode(buffer.slice(0, 4));
+  if (magic !== TRACE_BINARY_MAGIC) {
+    throw new Error("Invalid binary trace payload");
+  }
+
+  const headerLength = view.getUint32(4, true);
+  const payloadOffset = view.getUint32(8, true);
+  const headerBytes = new Uint8Array(buffer, 12, headerLength);
+  const payload = JSON.parse(textDecoder.decode(headerBytes));
+  const body = new Int16Array(buffer, payloadOffset);
+  let cursor = 0;
+
+  payload.traces = payload.traces.map((trace) => {
+    const nextTrace = { ...trace };
+    if (payload.mode === "raw") {
+      nextTrace.values = body.subarray(cursor, cursor + trace.length);
+      cursor += trace.length;
+      return nextTrace;
+    }
+
+    nextTrace.mins = body.subarray(cursor, cursor + trace.length);
+    cursor += trace.length;
+    nextTrace.maxs = body.subarray(cursor, cursor + trace.length);
+    cursor += trace.length;
+    return nextTrace;
+  });
+
+  return payload;
+}
+
+async function fetchTracePayload(path, controller) {
+  const response = await fetch(path, { signal: controller.signal });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `Request failed with ${response.status}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes(TRACE_BINARY_CONTENT_TYPE)) {
+    const buffer = await response.arrayBuffer();
+    return parseBinaryTracePayload(buffer);
+  }
+
+  return response.json();
+}
+
 function queryString(params) {
   return new URLSearchParams(params).toString();
 }
@@ -261,8 +312,9 @@ async function refreshOverview() {
     end: String(state.metadata.total_samples),
     width_px: String(overviewCanvas.width),
     channels: state.channels.join(","),
+    format: "binary",
   });
-  const data = await fetchJson(`/api/overview?${params}`, controller);
+  const data = await fetchTracePayload(`/api/overview?${params}`, controller);
   if (requestId !== state.overviewRequestId) {
     return;
   }
@@ -284,9 +336,10 @@ async function refreshDetail() {
     end: String(Math.round(requestWindow.end)),
     width_px: String(requestWindow.widthPx),
     channels: state.channels.join(","),
+    format: "binary",
   });
   try {
-    const data = await fetchJson(`/api/detail?${params}`, controller);
+    const data = await fetchTracePayload(`/api/detail?${params}`, controller);
     if (requestId !== state.detailRequestId) {
       return;
     }

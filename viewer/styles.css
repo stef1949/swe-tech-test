@@ -150,7 +150,7 @@ body {
 }
 
 .status-badge.idle {
-  background: transparent;
+  background: rgb(0, 49, 0);
   color: var(--text);
 }
 
@@ -161,7 +161,7 @@ body {
 }
 
 .status-badge.error {
-  background: #1a1a1a;
+  background: #ff0000;
   border-color: var(--surface-strong);
   color: var(--text);
 }
@@ -285,9 +285,9 @@ button:focus-visible {
 .channel-grid {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
-  max-height: 540px;
+  max-height: 270px;
   overflow: auto;
   padding-right: 4px;
 }
@@ -312,6 +312,7 @@ button:focus-visible {
   padding: 10px 12px;
   border: 1px solid var(--border);
   background: #101010;
+  border-radius: 4px;
 }
 
 .channel-option:hover {

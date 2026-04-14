@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import mimetypes
+import struct
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -26,6 +27,10 @@ DEFAULT_DETAIL_SECONDS = 1.0
 DEFAULT_WIDTH_PX = 1200
 DETAIL_MAX_SAMPLES_PER_PIXEL = 2.5
 OVERVIEW_CACHE_SIZE = 16
+TRACE_BINARY_MAGIC = b"TVB1"
+TRACE_BINARY_CONTENT_TYPE = "application/vnd.traceviewer.binary"
+OVERVIEW_PYRAMID_MIN_BUCKETS = 1024
+OVERVIEW_PYRAMID_MULTIPLIER = 8
 CLIENT_DISCONNECT_ERRNOS = {32, 54, 104, 10053, 10054}
 
 
@@ -111,6 +116,26 @@ def reduce_to_envelope(data: np.ndarray, bucket_count: int) -> tuple[np.ndarray,
     return mins.astype(np.int16, copy=False), maxs.astype(np.int16, copy=False)
 
 
+def reduce_envelope_pair(
+    mins: np.ndarray,
+    maxs: np.ndarray,
+    bucket_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    sample_count = int(mins.shape[0])
+    if sample_count == 0:
+        empty = np.empty(0, dtype=np.int16)
+        return empty, empty
+    bucket_count = max(1, min(bucket_count, sample_count))
+    if bucket_count == sample_count:
+        return mins.astype(np.int16, copy=False), maxs.astype(np.int16, copy=False)
+
+    bounds = np.linspace(0, sample_count, num=bucket_count + 1, dtype=np.int64)
+    starts = bounds[:-1]
+    reduced_mins = np.minimum.reduceat(mins, starts)
+    reduced_maxs = np.maximum.reduceat(maxs, starts)
+    return reduced_mins.astype(np.int16, copy=False), reduced_maxs.astype(np.int16, copy=False)
+
+
 def samples_per_pixel(sample_count: int, width_px: int) -> float:
     return sample_count / max(1, width_px)
 
@@ -148,6 +173,79 @@ class WindowRequest:
     channels: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class OverviewLevel:
+    bucket_count: int
+    mins_by_channel: tuple[np.ndarray, ...]
+    maxs_by_channel: tuple[np.ndarray, ...]
+
+
+def jsonify_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    traces: list[dict[str, Any]] = []
+    for trace in payload["traces"]:
+        trace_payload = {
+            "channel": trace["channel"],
+            "min_count": trace["min_count"],
+            "max_count": trace["max_count"],
+        }
+        if payload["mode"] == "raw":
+            trace_payload["values"] = trace["values"].tolist()
+        else:
+            trace_payload["mins"] = trace["mins"].tolist()
+            trace_payload["maxs"] = trace["maxs"].tolist()
+        traces.append(trace_payload)
+
+    return {
+        **{key: value for key, value in payload.items() if key != "traces"},
+        "channels": list(payload["channels"]),
+        "traces": traces,
+    }
+
+
+def encode_trace_payload(payload: dict[str, Any]) -> bytes:
+    traces_header: list[dict[str, Any]] = []
+    body_parts: list[bytes] = []
+
+    for trace in payload["traces"]:
+        trace_header = {
+            "channel": trace["channel"],
+            "min_count": trace["min_count"],
+            "max_count": trace["max_count"],
+        }
+        if payload["mode"] == "raw":
+            values = np.asarray(trace["values"], dtype="<i2")
+            trace_header["length"] = int(values.shape[0])
+            body_parts.append(values.tobytes(order="C"))
+        else:
+            mins = np.asarray(trace["mins"], dtype="<i2")
+            maxs = np.asarray(trace["maxs"], dtype="<i2")
+            trace_header["length"] = int(mins.shape[0])
+            body_parts.append(mins.tobytes(order="C"))
+            body_parts.append(maxs.tobytes(order="C"))
+        traces_header.append(trace_header)
+
+    header = {
+        **{key: value for key, value in payload.items() if key != "traces"},
+        "channels": list(payload["channels"]),
+        "traces": traces_header,
+    }
+    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    prefix_size = 12
+    payload_offset = prefix_size + len(header_bytes)
+    if payload_offset % 2:
+        payload_offset += 1
+    padding = b"\0" * (payload_offset - prefix_size - len(header_bytes))
+    return b"".join(
+        [
+            TRACE_BINARY_MAGIC,
+            struct.pack("<II", len(header_bytes), payload_offset),
+            header_bytes,
+            padding,
+            *body_parts,
+        ]
+    )
+
+
 class TraceDataService:
     def __init__(self, input_path: Path):
         self.input_path = input_path
@@ -164,6 +262,7 @@ class TraceDataService:
         self.current_dtype_info = np.iinfo(self.current_arr.dtype)
         self._overview_cache = LRUCache(OVERVIEW_CACHE_SIZE)
         self._cache_lock = threading.Lock()
+        self._overview_levels = self._build_overview_levels()
         default_window_samples = int(self.sample_rate_hz * DEFAULT_DETAIL_SECONDS)
         self._metadata = {
             "device_id": self.attrs.get("device_id"),
@@ -202,49 +301,114 @@ class TraceDataService:
     def _read_channel_slice(self, channel: int, start: int, end: int) -> np.ndarray:
         return np.asarray(self.current_arr[channel, start:end], dtype=np.int16)
 
-    def overview(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        request = self._normalize_request(query)
-        cache_key = ("overview", request.start, request.end, request.width_px, request.channels)
-        with self._cache_lock:
-            cached = self._overview_cache.get(cache_key)
-        if cached is not None:
-            return {**cached, "cache": "hit"}
+    def _overview_bucket_counts(self) -> list[int]:
+        if self.total_samples <= 0:
+            return [1]
 
+        target = min(
+            self.total_samples,
+            max(OVERVIEW_PYRAMID_MIN_BUCKETS, DEFAULT_WIDTH_PX * OVERVIEW_PYRAMID_MULTIPLIER),
+        )
+        finest = 1
+        while finest < target:
+            finest <<= 1
+        finest = min(finest, self.total_samples)
+
+        counts: list[int] = []
+        current = finest
+        minimum = min(self.total_samples, OVERVIEW_PYRAMID_MIN_BUCKETS)
+        while current >= 1:
+            counts.append(current)
+            if current <= minimum:
+                break
+            current = max(1, current // 2)
+        return sorted(set(counts))
+
+    def _build_overview_levels(self) -> tuple[OverviewLevel, ...]:
+        bucket_counts = self._overview_bucket_counts()
+        finest_bucket_count = bucket_counts[-1]
+        mins_by_count: dict[int, list[np.ndarray]] = {count: [] for count in bucket_counts}
+        maxs_by_count: dict[int, list[np.ndarray]] = {count: [] for count in bucket_counts}
+
+        for channel in range(self.total_channels):
+            data = self._read_channel_slice(channel, 0, self.total_samples)
+            finest_mins, finest_maxs = reduce_to_envelope(data, finest_bucket_count)
+            mins_by_count[finest_bucket_count].append(finest_mins)
+            maxs_by_count[finest_bucket_count].append(finest_maxs)
+
+            previous_mins = finest_mins
+            previous_maxs = finest_maxs
+            previous_count = finest_bucket_count
+            for bucket_count in reversed(bucket_counts[:-1]):
+                if bucket_count == previous_count:
+                    reduced_mins = previous_mins
+                    reduced_maxs = previous_maxs
+                else:
+                    reduced_mins, reduced_maxs = reduce_envelope_pair(previous_mins, previous_maxs, bucket_count)
+                mins_by_count[bucket_count].append(reduced_mins)
+                maxs_by_count[bucket_count].append(reduced_maxs)
+                previous_mins = reduced_mins
+                previous_maxs = reduced_maxs
+                previous_count = bucket_count
+
+        levels = [
+            OverviewLevel(
+                bucket_count=count,
+                mins_by_channel=tuple(mins_by_count[count]),
+                maxs_by_channel=tuple(maxs_by_count[count]),
+            )
+            for count in bucket_counts
+        ]
+        return tuple(levels)
+
+    def _select_overview_level(self, width_px: int) -> OverviewLevel:
+        for level in self._overview_levels:
+            if level.bucket_count >= width_px:
+                return level
+        return self._overview_levels[-1]
+
+    def _build_overview_payload(self, request: WindowRequest, cache_status: str = "miss") -> dict[str, Any]:
+        level = self._select_overview_level(request.width_px)
         traces = []
-        bucket_count = max(1, min(request.width_px, request.end - request.start))
+        total_span = max(1, self.total_samples)
+        start_index = max(0, math.floor((request.start / total_span) * level.bucket_count))
+        end_index = min(level.bucket_count, math.ceil((request.end / total_span) * level.bucket_count))
+        end_index = max(start_index + 1, end_index)
+
         for channel in request.channels:
-            data = self._read_channel_slice(channel, request.start, request.end)
-            mins, maxs = reduce_to_envelope(data, bucket_count)
+            level_mins = level.mins_by_channel[channel][start_index:end_index]
+            level_maxs = level.maxs_by_channel[channel][start_index:end_index]
+            bucket_count = max(1, min(request.width_px, level_mins.shape[0]))
+            mins, maxs = reduce_envelope_pair(level_mins, level_maxs, bucket_count)
             traces.append(
                 {
                     "channel": channel,
-                    "mins": mins.tolist(),
-                    "maxs": maxs.tolist(),
+                    "mins": mins,
+                    "maxs": maxs,
                     "min_count": int(mins.min()) if mins.size else 0,
                     "max_count": int(maxs.max()) if maxs.size else 0,
                 }
             )
 
-        response = {
+        returned_bucket_count = traces[0]["mins"].shape[0] if traces else 0
+
+        return {
             "mode": "envelope",
-            "cache": "miss",
+            "cache": cache_status,
+            "source": "pyramid",
             "start": request.start,
             "end": request.end,
             "sample_count": request.end - request.start,
             "samples_per_pixel": round(samples_per_pixel(request.end - request.start, request.width_px), 3),
             "width_px": request.width_px,
-            "bucket_count": bucket_count,
-            "channels": list(request.channels),
+            "bucket_count": returned_bucket_count,
+            "channels": request.channels,
             "current_scale": self.current_scale,
             "current_units": self.current_units,
             "traces": traces,
         }
-        with self._cache_lock:
-            self._overview_cache.set(cache_key, response)
-        return response
 
-    def detail(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        request = self._normalize_request(query)
+    def _build_detail_payload(self, request: WindowRequest) -> dict[str, Any]:
         sample_count = request.end - request.start
         render_mode = detail_mode_for_window(sample_count, request.width_px)
         traces = []
@@ -254,7 +418,7 @@ class TraceDataService:
                 traces.append(
                     {
                         "channel": channel,
-                        "values": data.tolist(),
+                        "values": data,
                         "min_count": int(data.min()) if data.size else 0,
                         "max_count": int(data.max()) if data.size else 0,
                     }
@@ -266,8 +430,8 @@ class TraceDataService:
             traces.append(
                 {
                     "channel": channel,
-                    "mins": mins.tolist(),
-                    "maxs": maxs.tolist(),
+                    "mins": mins,
+                    "maxs": maxs,
                     "min_count": int(mins.min()) if mins.size else 0,
                     "max_count": int(maxs.max()) if maxs.size else 0,
                 }
@@ -281,7 +445,7 @@ class TraceDataService:
             "seconds": round(sample_count / self.sample_rate_hz, 3),
             "samples_per_pixel": round(samples_per_pixel(sample_count, request.width_px), 3),
             "width_px": request.width_px,
-            "channels": list(request.channels),
+            "channels": request.channels,
             "current_scale": self.current_scale,
             "current_units": self.current_units,
             "traces": traces,
@@ -290,18 +454,57 @@ class TraceDataService:
             response["bucket_count"] = max(1, min(request.width_px, sample_count))
         return response
 
+    def overview(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        request = self._normalize_request(query)
+        cache_key = ("overview", request.start, request.end, request.width_px, request.channels)
+        with self._cache_lock:
+            cached = self._overview_cache.get(cache_key)
+        if cached is not None:
+            return jsonify_trace_payload({**cached, "cache": "hit"})
+
+        response = self._build_overview_payload(request)
+        with self._cache_lock:
+            self._overview_cache.set(cache_key, response)
+        return jsonify_trace_payload(response)
+
+    def detail(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        request = self._normalize_request(query)
+        return jsonify_trace_payload(self._build_detail_payload(request))
+
+    def overview_binary(self, query: dict[str, list[str]]) -> bytes:
+        request = self._normalize_request(query)
+        cache_key = ("overview", request.start, request.end, request.width_px, request.channels)
+        with self._cache_lock:
+            cached = self._overview_cache.get(cache_key)
+        if cached is not None:
+            return encode_trace_payload({**cached, "cache": "hit"})
+
+        response = self._build_overview_payload(request)
+        with self._cache_lock:
+            self._overview_cache.set(cache_key, response)
+        return encode_trace_payload(response)
+
+    def detail_binary(self, query: dict[str, list[str]]) -> bytes:
+        request = self._normalize_request(query)
+        return encode_trace_payload(self._build_detail_payload(request))
+
 
 class TraceViewerHandler(BaseHTTPRequestHandler):
     server_version = "TraceViewer/0.1"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
         if parsed.path == "/api/metadata":
             return self._handle_json(lambda: self.server.data_service.metadata())
         if parsed.path == "/api/overview":
-            return self._handle_json(lambda: self.server.data_service.overview(parse_qs(parsed.query)))
+            if query.get("format", ["json"])[0] == "binary":
+                return self._handle_binary(lambda: self.server.data_service.overview_binary(query))
+            return self._handle_json(lambda: self.server.data_service.overview(query))
         if parsed.path == "/api/detail":
-            return self._handle_json(lambda: self.server.data_service.detail(parse_qs(parsed.query)))
+            if query.get("format", ["json"])[0] == "binary":
+                return self._handle_binary(lambda: self.server.data_service.detail_binary(query))
+            return self._handle_json(lambda: self.server.data_service.detail(query))
         if parsed.path == "/health":
             return self._write_json({"ok": True})
         return self._serve_static(parsed.path)
@@ -323,6 +526,20 @@ class TraceViewerHandler(BaseHTTPRequestHandler):
             return
         self._write_json(payload)
 
+    def _handle_binary(self, callback: Any) -> None:
+        try:
+            payload = callback()
+        except ValueError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except FileNotFoundError as exc:
+            self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            return
+        except Exception as exc:  # pragma: no cover
+            self._write_json({"error": f"internal error: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._write_binary(payload)
+
     def _write_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         try:
@@ -332,6 +549,19 @@ class TraceViewerHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+        except OSError as exc:
+            if is_client_disconnect_error(exc):
+                return
+            raise
+
+    def _write_binary(self, payload: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", TRACE_BINARY_CONTENT_TYPE)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
         except OSError as exc:
             if is_client_disconnect_error(exc):
                 return
