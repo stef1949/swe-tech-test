@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nanopore Trace Viewer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Overview plus detail without blank redraws.</p>
+          <h1>Browser Trace Viewer Prototype.</h1>
+          <p class="hero-copy">
+            A canvas-based viewer over the mock 48-channel recording. The overview uses min/max envelopes,
+            the detail pane uses raw samples only for narrow windows, and previous frames stay visible while
+            fresh data is loading.
+          </p>
+        </div>
+        <div class="hero-metrics">
+          <div class="metric-card">
+            <span class="metric-label">Device</span>
+            <strong id="deviceId">Loading</strong>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Duration</span>
+            <strong id="durationLabel">Loading</strong>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Sample Rate</span>
+            <strong id="sampleRateLabel">Loading</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel control-panel">
+          <div class="panel-header">
+            <h2>Controls</h2>
+            <span id="statusBadge" class="status-badge idle">Idle</span>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-pill">
+              <span>Window</span>
+              <strong id="windowLabel">-</strong>
+            </div>
+            <div class="stat-pill">
+              <span>Mode</span>
+              <strong id="modeLabel">-</strong>
+            </div>
+            <div class="stat-pill">
+              <span>Density</span>
+              <strong id="densityLabel">-</strong>
+            </div>
+            <div class="stat-pill">
+              <span>Channels</span>
+              <strong id="channelCountLabel">-</strong>
+            </div>
+          </div>
+
+          <div class="control-row">
+            <button id="panLeftBtn" type="button">Pan Left</button>
+            <button id="panRightBtn" type="button">Pan Right</button>
+            <button id="zoomInBtn" type="button">Zoom In</button>
+            <button id="zoomOutBtn" type="button">Zoom Out</button>
+          </div>
+
+          <div class="control-row jump-row">
+            <label class="field">
+              <span>Center (s)</span>
+              <input id="centerInput" type="number" min="0" step="0.1">
+            </label>
+            <label class="field">
+              <span>Window (s)</span>
+              <input id="windowInput" type="number" min="0.2" step="0.1">
+            </label>
+            <button id="jumpBtn" type="button">Jump</button>
+          </div>
+
+          <div class="channel-section">
+            <div class="channel-head">
+              <h3>Visible Channels</h3>
+              <button id="applyChannelsBtn" type="button">Apply Selection</button>
+            </div>
+            <div id="channelGrid" class="channel-grid"></div>
+          </div>
+        </section>
+
+        <section class="panel viewer-panel">
+          <div class="panel-header">
+            <h2>Overview</h2>
+            <p>Click to recenter the detail window. The brush updates immediately, then the new data swaps in.</p>
+          </div>
+          <div class="canvas-frame">
+            <canvas id="overviewCanvas" width="1200" height="280"></canvas>
+            <div id="overviewBrush" class="overview-brush"></div>
+          </div>
+        </section>
+
+        <section class="panel viewer-panel">
+          <div class="panel-header">
+            <h2>Detail</h2>
+            <p>Mouse wheel zooms. Drag horizontally to pan. Existing traces remain visible while requests are in flight.</p>
+          </div>
+          <div class="canvas-frame detail-frame">
+            <canvas id="detailCanvas" width="1200" height="680"></canvas>
+            <div id="detailOverlay" class="detail-overlay hidden">Updating traces...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

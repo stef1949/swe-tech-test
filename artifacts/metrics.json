@@ -1,0 +1,545 @@
+{
+  "dataset": {
+    "recording_path": "C:\\Users\\stef1\\Downloads\\swe-tech-test\\swe-tech-test\\mock48_2500hz_1.5h.zarr",
+    "generated_at_utc": "2026-04-14T11:55:03+00:00",
+    "device_id": "mock-48ch-001",
+    "shape": [
+      48,
+      13500000
+    ],
+    "number_of_channels": 48,
+    "sample_rate_hz": 2500.0,
+    "duration_sec": 5400,
+    "current_units": "pA",
+    "current_scale": 0.06103515625000001,
+    "current_offset": 0,
+    "voltage_scale": 0.0625,
+    "voltage_offset": 0,
+    "current_raw_bytes": 1296000000,
+    "voltage_raw_bytes": 1296000000,
+    "total_raw_bytes": 2592000000
+  },
+  "layout": {
+    "current_data": {
+      "path": "C:\\Users\\stef1\\Downloads\\swe-tech-test\\swe-tech-test\\mock48_2500hz_1.5h.zarr\\current_data",
+      "shape": [
+        48,
+        13500000
+      ],
+      "dtype": "int16",
+      "dtype_itemsize": 2,
+      "chunks": [
+        1,
+        50000
+      ],
+      "shards": [
+        1,
+        1600000
+      ],
+      "logical_chunks_per_channel": 270,
+      "shards_per_channel": 9,
+      "raw_bytes": 1296000000,
+      "compressed_bytes": 685164973,
+      "compression_ratio": 1.892,
+      "file_count": 433,
+      "metadata_file_count": 1,
+      "data_object_count": 432,
+      "largest_data_object_bytes": 2260979,
+      "smallest_data_object_bytes": 1216,
+      "average_data_object_bytes": 1586027.137,
+      "codecs": [
+        {
+          "name": "sharding_indexed",
+          "configuration": {
+            "chunk_shape": [
+              1,
+              50000
+            ],
+            "codecs": [
+              {
+                "name": "bytes",
+                "configuration": {
+                  "endian": "little"
+                }
+              },
+              {
+                "name": "blosc",
+                "configuration": {
+                  "typesize": 2,
+                  "cname": "zstd",
+                  "clevel": 3,
+                  "shuffle": "bitshuffle",
+                  "blocksize": 0
+                }
+              }
+            ],
+            "index_codecs": [
+              {
+                "name": "bytes",
+                "configuration": {
+                  "endian": "little"
+                }
+              },
+              {
+                "name": "crc32c"
+              }
+            ],
+            "index_location": "end"
+          }
+        }
+      ]
+    },
+    "voltage_data": {
+      "path": "C:\\Users\\stef1\\Downloads\\swe-tech-test\\swe-tech-test\\mock48_2500hz_1.5h.zarr\\voltage_data",
+      "shape": [
+        48,
+        13500000
+      ],
+      "dtype": "int16",
+      "dtype_itemsize": 2,
+      "chunks": [
+        1,
+        300000
+      ],
+      "shards": [
+        1,
+        9600000
+      ],
+      "logical_chunks_per_channel": 45,
+      "shards_per_channel": 2,
+      "raw_bytes": 1296000000,
+      "compressed_bytes": 1398624,
+      "compression_ratio": 926.625,
+      "file_count": 97,
+      "metadata_file_count": 1,
+      "data_object_count": 96,
+      "largest_data_object_bytes": 20484,
+      "smallest_data_object_bytes": 8628,
+      "average_data_object_bytes": 14556.0,
+      "codecs": [
+        {
+          "name": "sharding_indexed",
+          "configuration": {
+            "chunk_shape": [
+              1,
+              300000
+            ],
+            "codecs": [
+              {
+                "name": "bytes",
+                "configuration": {
+                  "endian": "little"
+                }
+              },
+              {
+                "name": "blosc",
+                "configuration": {
+                  "typesize": 2,
+                  "cname": "zstd",
+                  "clevel": 1,
+                  "shuffle": "shuffle",
+                  "blocksize": 0
+                }
+              }
+            ],
+            "index_codecs": [
+              {
+                "name": "bytes",
+                "configuration": {
+                  "endian": "little"
+                }
+              },
+              {
+                "name": "crc32c"
+              }
+            ],
+            "index_location": "end"
+          }
+        }
+      ]
+    }
+  },
+  "benchmarks": [
+    {
+      "scenario": "1s",
+      "start_sample": 0,
+      "end_sample": 2500,
+      "samples_per_channel": 2500,
+      "seconds": 1.0,
+      "samples_per_pixel": 2.083,
+      "time_chunks_touched": 1,
+      "time_shards_touched": 1,
+      "modes": {
+        "single_channel": {
+          "channels_read": 1,
+          "raw_payload_bytes": 5000,
+          "estimated_object_reads": 1,
+          "estimated_logical_chunks": 1,
+          "cold_ms": 3.737,
+          "warm_runs_ms": [
+            1.314,
+            1.077,
+            1.048
+          ],
+          "warm_summary_ms": {
+            "average_ms": 1.146,
+            "median_ms": 1.077,
+            "min_ms": 1.048,
+            "max_ms": 1.314
+          },
+          "materialized_shape": [
+            2500
+          ]
+        },
+        "all_channels": {
+          "channels_read": 48,
+          "raw_payload_bytes": 240000,
+          "estimated_object_reads": 48,
+          "estimated_logical_chunks": 48,
+          "cold_ms": 36.699,
+          "warm_runs_ms": [
+            28.119,
+            26.521,
+            27.399
+          ],
+          "warm_summary_ms": {
+            "average_ms": 27.346,
+            "median_ms": 27.399,
+            "min_ms": 26.521,
+            "max_ms": 28.119
+          },
+          "materialized_shape": [
+            48,
+            2500
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "10s",
+      "start_sample": 0,
+      "end_sample": 25000,
+      "samples_per_channel": 25000,
+      "seconds": 10.0,
+      "samples_per_pixel": 20.833,
+      "time_chunks_touched": 1,
+      "time_shards_touched": 1,
+      "modes": {
+        "single_channel": {
+          "channels_read": 1,
+          "raw_payload_bytes": 50000,
+          "estimated_object_reads": 1,
+          "estimated_logical_chunks": 1,
+          "cold_ms": 1.073,
+          "warm_runs_ms": [
+            1.148,
+            1.126,
+            1.099
+          ],
+          "warm_summary_ms": {
+            "average_ms": 1.124,
+            "median_ms": 1.126,
+            "min_ms": 1.099,
+            "max_ms": 1.148
+          },
+          "materialized_shape": [
+            25000
+          ]
+        },
+        "all_channels": {
+          "channels_read": 48,
+          "raw_payload_bytes": 2400000,
+          "estimated_object_reads": 48,
+          "estimated_logical_chunks": 48,
+          "cold_ms": 32.931,
+          "warm_runs_ms": [
+            28.387,
+            26.398,
+            27.647
+          ],
+          "warm_summary_ms": {
+            "average_ms": 27.477,
+            "median_ms": 27.647,
+            "min_ms": 26.398,
+            "max_ms": 28.387
+          },
+          "materialized_shape": [
+            48,
+            25000
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "60s",
+      "start_sample": 0,
+      "end_sample": 150000,
+      "samples_per_channel": 150000,
+      "seconds": 60.0,
+      "samples_per_pixel": 125.0,
+      "time_chunks_touched": 3,
+      "time_shards_touched": 1,
+      "modes": {
+        "single_channel": {
+          "channels_read": 1,
+          "raw_payload_bytes": 300000,
+          "estimated_object_reads": 1,
+          "estimated_logical_chunks": 3,
+          "cold_ms": 1.675,
+          "warm_runs_ms": [
+            1.768,
+            1.775,
+            1.542
+          ],
+          "warm_summary_ms": {
+            "average_ms": 1.695,
+            "median_ms": 1.768,
+            "min_ms": 1.542,
+            "max_ms": 1.775
+          },
+          "materialized_shape": [
+            150000
+          ]
+        },
+        "all_channels": {
+          "channels_read": 48,
+          "raw_payload_bytes": 14400000,
+          "estimated_object_reads": 48,
+          "estimated_logical_chunks": 144,
+          "cold_ms": 60.285,
+          "warm_runs_ms": [
+            54.249,
+            55.773,
+            54.24
+          ],
+          "warm_summary_ms": {
+            "average_ms": 54.754,
+            "median_ms": 54.249,
+            "min_ms": 54.24,
+            "max_ms": 55.773
+          },
+          "materialized_shape": [
+            48,
+            150000
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "5min",
+      "start_sample": 0,
+      "end_sample": 750000,
+      "samples_per_channel": 750000,
+      "seconds": 300.0,
+      "samples_per_pixel": 625.0,
+      "time_chunks_touched": 15,
+      "time_shards_touched": 1,
+      "modes": {
+        "single_channel": {
+          "channels_read": 1,
+          "raw_payload_bytes": 1500000,
+          "estimated_object_reads": 1,
+          "estimated_logical_chunks": 15,
+          "cold_ms": 5.82,
+          "warm_runs_ms": [
+            5.985,
+            6.186,
+            5.948
+          ],
+          "warm_summary_ms": {
+            "average_ms": 6.04,
+            "median_ms": 5.985,
+            "min_ms": 5.948,
+            "max_ms": 6.186
+          },
+          "materialized_shape": [
+            750000
+          ]
+        },
+        "all_channels": {
+          "channels_read": 48,
+          "raw_payload_bytes": 72000000,
+          "estimated_object_reads": 48,
+          "estimated_logical_chunks": 720,
+          "cold_ms": 221.236,
+          "warm_runs_ms": [
+            234.108,
+            217.98,
+            229.483
+          ],
+          "warm_summary_ms": {
+            "average_ms": 227.19,
+            "median_ms": 229.483,
+            "min_ms": 217.98,
+            "max_ms": 234.108
+          },
+          "materialized_shape": [
+            48,
+            750000
+          ]
+        }
+      }
+    },
+    {
+      "scenario": "cross_shard",
+      "start_sample": 1550000,
+      "end_sample": 1650000,
+      "samples_per_channel": 100000,
+      "seconds": 40.0,
+      "samples_per_pixel": 83.333,
+      "time_chunks_touched": 2,
+      "time_shards_touched": 2,
+      "modes": {
+        "single_channel": {
+          "channels_read": 1,
+          "raw_payload_bytes": 200000,
+          "estimated_object_reads": 2,
+          "estimated_logical_chunks": 2,
+          "cold_ms": 2.192,
+          "warm_runs_ms": [
+            1.771,
+            1.937,
+            1.634
+          ],
+          "warm_summary_ms": {
+            "average_ms": 1.781,
+            "median_ms": 1.771,
+            "min_ms": 1.634,
+            "max_ms": 1.937
+          },
+          "materialized_shape": [
+            100000
+          ]
+        },
+        "all_channels": {
+          "channels_read": 48,
+          "raw_payload_bytes": 9600000,
+          "estimated_object_reads": 96,
+          "estimated_logical_chunks": 96,
+          "cold_ms": 65.302,
+          "warm_runs_ms": [
+            58.534,
+            69.211,
+            60.694
+          ],
+          "warm_summary_ms": {
+            "average_ms": 62.813,
+            "median_ms": 60.694,
+            "min_ms": 58.534,
+            "max_ms": 69.211
+          },
+          "materialized_shape": [
+            48,
+            100000
+          ]
+        }
+      }
+    }
+  ],
+  "derived": {
+    "viewport_width_px": 1200,
+    "raw_detail_cutoff_samples_per_channel": 3000,
+    "raw_detail_cutoff_seconds": 1.2,
+    "raw_detail_cutoff_samples_per_pixel": 2.5,
+    "service_payload_encoding": "Binary int16 ADC counts plus scale metadata.",
+    "window_models": [
+      {
+        "scenario": "1s",
+        "samples_per_channel": 2500,
+        "seconds": 1.0,
+        "samples_per_pixel": 2.083,
+        "raw_payload_bytes_single_channel": 5000,
+        "raw_payload_bytes_all_channels": 240000,
+        "envelope_payload_bytes_single_channel": 4800,
+        "envelope_payload_bytes_all_channels": 230400,
+        "payload_reduction_ratio_all_channels": 1.042,
+        "recommended_mode": "raw"
+      },
+      {
+        "scenario": "10s",
+        "samples_per_channel": 25000,
+        "seconds": 10.0,
+        "samples_per_pixel": 20.833,
+        "raw_payload_bytes_single_channel": 50000,
+        "raw_payload_bytes_all_channels": 2400000,
+        "envelope_payload_bytes_single_channel": 4800,
+        "envelope_payload_bytes_all_channels": 230400,
+        "payload_reduction_ratio_all_channels": 10.417,
+        "recommended_mode": "envelope"
+      },
+      {
+        "scenario": "60s",
+        "samples_per_channel": 150000,
+        "seconds": 60.0,
+        "samples_per_pixel": 125.0,
+        "raw_payload_bytes_single_channel": 300000,
+        "raw_payload_bytes_all_channels": 14400000,
+        "envelope_payload_bytes_single_channel": 4800,
+        "envelope_payload_bytes_all_channels": 230400,
+        "payload_reduction_ratio_all_channels": 62.5,
+        "recommended_mode": "envelope"
+      },
+      {
+        "scenario": "5min",
+        "samples_per_channel": 750000,
+        "seconds": 300.0,
+        "samples_per_pixel": 625.0,
+        "raw_payload_bytes_single_channel": 1500000,
+        "raw_payload_bytes_all_channels": 72000000,
+        "envelope_payload_bytes_single_channel": 4800,
+        "envelope_payload_bytes_all_channels": 230400,
+        "payload_reduction_ratio_all_channels": 312.5,
+        "recommended_mode": "envelope"
+      },
+      {
+        "scenario": "cross_shard",
+        "samples_per_channel": 100000,
+        "seconds": 40.0,
+        "samples_per_pixel": 83.333,
+        "raw_payload_bytes_single_channel": 200000,
+        "raw_payload_bytes_all_channels": 9600000,
+        "envelope_payload_bytes_single_channel": 4800,
+        "envelope_payload_bytes_all_channels": 230400,
+        "payload_reduction_ratio_all_channels": 41.667,
+        "recommended_mode": "envelope"
+      }
+    ],
+    "full_recording_overview": {
+      "samples_per_channel": 13500000,
+      "seconds": 5400.0,
+      "samples_per_pixel": 11250.0,
+      "raw_payload_bytes_all_channels": 1296000000,
+      "envelope_payload_bytes_all_channels": 230400,
+      "payload_reduction_ratio_all_channels": 5625.0
+    }
+  },
+  "recommendation": {
+    "cloud": "AWS",
+    "architecture": [
+      "S3 for canonical Zarr stores and precomputed overview pyramids.",
+      "CloudFront for the browser bundle and cacheable overview responses.",
+      "FastAPI on ECS Fargate behind an ALB for metadata and detail-window reads.",
+      "Background jobs on ECS tasks or AWS Batch to build and refresh min/max pyramid levels."
+    ],
+    "data_delivery": [
+      "GET /recordings/{id}/metadata returns recording dimensions, scales, duration, and overview levels.",
+      "GET /recordings/{id}/overview returns min/max envelopes sized to the viewport width and can be cached aggressively.",
+      "GET /recordings/{id}/detail returns raw int16 samples for narrow windows only and preserves the prior viewport until replacement data arrives."
+    ],
+    "decision_rules": [
+      "Use raw samples only when the requested window is at or below 1.2 s per channel (3000 samples at 2.5 samples/pixel).",
+      "Switch to precomputed or on-demand min/max envelopes for broader windows to cap payload size and improve cacheability.",
+      "Optimize current_data first; treat voltage_data as metadata-rich but latency-insensitive."
+    ],
+    "risks": [
+      "Cross-shard all-channel reads fan out into many object fetches because current_data is sharded by channel and time.",
+      "Generating overview envelopes on every pan or zoom will add cost and tail latency unless higher levels are precomputed and cached.",
+      "The UI must retain the previous frame until the next payload is ready or users will see blank redraws during navigation."
+    ],
+    "phases": [
+      "V1: metadata endpoint, detail reads, one overview envelope level, and optimistic client swap without blank states.",
+      "V2: multiresolution pyramid generation, cache headers, and prefetching adjacent overview/detail windows.",
+      "V3: observability, backpressure controls, SLO-driven tuning, and admission limits for expensive multi-channel queries."
+    ]
+  }
+}
