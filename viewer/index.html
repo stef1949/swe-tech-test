@@ -18,21 +18,25 @@
             fresh data is loading.
           </p>
         </div>
-        <div class="hero-metrics">
-          <div class="metric-card">
-            <span class="metric-label">Device</span>
-            <strong id="deviceId">Loading</strong>
-          </div>
+          <div class="hero-metrics">
+            <div class="metric-card">
+              <span class="metric-label">Device</span>
+              <strong id="deviceId">Loading</strong>
+            </div>
           <div class="metric-card">
             <span class="metric-label">Duration</span>
             <strong id="durationLabel">Loading</strong>
           </div>
-          <div class="metric-card">
-            <span class="metric-label">Sample Rate</span>
-            <strong id="sampleRateLabel">Loading</strong>
+            <div class="metric-card">
+              <span class="metric-label">Sample Rate</span>
+              <strong id="sampleRateLabel">Loading</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Voltage Range</span>
+              <strong id="voltageLabel">Loading</strong>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
       <main class="layout">
         <section class="panel control-panel">
@@ -58,6 +62,14 @@
               <span>Channels</span>
               <strong id="channelCountLabel">-</strong>
             </div>
+            <div class="stat-pill">
+              <span>Source</span>
+              <strong id="sourceLabel">-</strong>
+            </div>
+            <div class="stat-pill">
+              <span>Scale</span>
+              <strong id="scaleLabel">-</strong>
+            </div>
           </div>
 
           <div class="control-row">
@@ -79,6 +91,19 @@
             <button id="jumpBtn" type="button">Jump</button>
           </div>
 
+          <div class="scale-section">
+            <div class="channel-head">
+              <h3>Vertical Scale</h3>
+            </div>
+            <div class="segmented-control" role="group" aria-label="Vertical scale mode">
+              <button id="scaleAutoBtn" type="button" class="is-active">Auto Per Channel</button>
+              <button id="scaleSharedBtn" type="button">Shared Physical</button>
+            </div>
+            <p class="scale-copy">
+              Auto scale improves local inspection. Shared physical scale preserves amplitude comparison across channels.
+            </p>
+          </div>
+
           <div class="channel-section">
             <div class="channel-head">
               <h3>Visible Channels</h3>
@@ -91,7 +116,7 @@
         <section class="panel viewer-panel">
           <div class="panel-header">
             <h2>Overview</h2>
-            <p>Click to recenter the detail window. The brush updates immediately, then the new data swaps in.</p>
+            <p>Click to recenter the detail window. The overview is always a min/max envelope so short blockade events are not averaged away.</p>
           </div>
           <div class="canvas-frame">
             <canvas id="overviewCanvas" width="1200" height="280"></canvas>
@@ -102,7 +127,7 @@
         <section class="panel viewer-panel">
           <div class="panel-header">
             <h2>Detail</h2>
-            <p>Mouse wheel zooms. Drag horizontally to pan. Existing traces remain visible while requests are in flight.</p>
+            <p>Mouse wheel zooms. Drag horizontally to pan. Labels show when the view is raw versus a min/max summary, and stale traces remain visible while requests are in flight.</p>
           </div>
           <div class="canvas-frame detail-frame">
             <canvas id="detailCanvas" width="1200" height="680"></canvas>

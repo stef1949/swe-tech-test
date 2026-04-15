@@ -70,7 +70,7 @@ body {
 
 .hero-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -275,6 +275,39 @@ button:focus-visible {
   margin-top: 18px;
 }
 
+.scale-section {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  background: #101010;
+}
+
+.scale-copy {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.segmented-control button {
+  min-height: 42px;
+  background: #111111;
+}
+
+.segmented-control button.is-active {
+  background: #f5f5f5;
+  border-color: #f5f5f5;
+  color: #050505;
+  font-weight: 700;
+}
+
 .channel-head {
   display: flex;
   align-items: center;
@@ -408,7 +441,8 @@ canvas {
   .hero-metrics,
   .stats-grid,
   .control-row,
-  .channel-grid {
+  .channel-grid,
+  .segmented-control {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

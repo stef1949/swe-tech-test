@@ -327,8 +327,14 @@ class TraceDataService:
         self.total_samples = int(self.current_arr.shape[1])
         self.sample_rate_hz = float(self.attrs["sample_rate_hz"])
         self.current_scale = float(self.attrs["current_scale"])
+        self.current_offset = float(self.attrs.get("current_offset", 0.0))
         self.current_units = str(self.attrs["current_units"])
+        self.voltage_scale = float(self.attrs["voltage_scale"])
+        self.voltage_offset = float(self.attrs.get("voltage_offset", 0.0))
+        self.voltage_units = "mV"
         self.current_dtype_info = np.iinfo(self.current_arr.dtype)
+        voltage_counts = np.asarray(self.voltage_arr[:, 0], dtype=np.float32)
+        self.channel_voltage_mv = (voltage_counts * self.voltage_scale) + self.voltage_offset
         self._overview_cache = LRUCache(OVERVIEW_CACHE_SIZE)
         self._cache_lock = threading.Lock()
         self._overview_levels = self._build_overview_levels()
@@ -340,10 +346,18 @@ class TraceDataService:
             "sample_rate_hz": self.sample_rate_hz,
             "duration_sec": int(self.attrs.get("duration_sec")),
             "current_scale": self.current_scale,
+            "current_offset": self.current_offset,
             "current_units": self.current_units,
             "current_count_min": int(self.current_dtype_info.min),
             "current_count_max": int(self.current_dtype_info.max),
-            "voltage_scale": float(self.attrs.get("voltage_scale", 1.0)),
+            "voltage_scale": self.voltage_scale,
+            "voltage_offset": self.voltage_offset,
+            "voltage_units": self.voltage_units,
+            "channel_voltage_mv": [round(float(value), 4) for value in self.channel_voltage_mv],
+            "voltage_range_mv": {
+                "min": round(float(self.channel_voltage_mv.min()), 4),
+                "max": round(float(self.channel_voltage_mv.max()), 4),
+            },
             "default_channels": list(range(min(DEFAULT_VISIBLE_CHANNELS, self.total_channels))),
             "default_window": {
                 "start": 0,
@@ -380,7 +394,10 @@ class TraceDataService:
         try:
             sample_rate_hz = float(self.attrs["sample_rate_hz"])
             current_scale = float(self.attrs["current_scale"])
+            current_offset = float(self.attrs.get("current_offset", 0.0))
             current_units = str(self.attrs["current_units"])
+            voltage_scale = float(self.attrs["voltage_scale"])
+            voltage_offset = float(self.attrs.get("voltage_offset", 0.0))
             duration_sec = float(self.attrs["duration_sec"])
         except KeyError as exc:
             raise ValueError(f"missing required recording attribute: {exc.args[0]}") from exc
@@ -389,8 +406,14 @@ class TraceDataService:
             raise ValueError("sample_rate_hz must be a positive finite number")
         if not math.isfinite(current_scale) or current_scale <= 0:
             raise ValueError("current_scale must be a positive finite number")
+        if not math.isfinite(current_offset):
+            raise ValueError("current_offset must be a finite number")
         if not current_units:
             raise ValueError("current_units must be a non-empty string")
+        if not math.isfinite(voltage_scale) or voltage_scale <= 0:
+            raise ValueError("voltage_scale must be a positive finite number")
+        if not math.isfinite(voltage_offset):
+            raise ValueError("voltage_offset must be a finite number")
         if not math.isfinite(duration_sec) or duration_sec <= 0:
             raise ValueError("duration_sec must be a positive finite number")
 

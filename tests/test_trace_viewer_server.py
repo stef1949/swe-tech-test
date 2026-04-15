@@ -156,8 +156,12 @@ class TraceViewerServerTests(unittest.TestCase):
             metadata = service.metadata()
             self.assertEqual(metadata["channels"], 4)
             self.assertEqual(metadata["default_channels"], [0, 1, 2, 3])
+            self.assertEqual(metadata["current_offset"], 0.0)
             self.assertEqual(metadata["current_count_min"], -32768)
             self.assertEqual(metadata["current_count_max"], 32767)
+            self.assertEqual(metadata["voltage_units"], "mV")
+            self.assertEqual(len(metadata["channel_voltage_mv"]), 4)
+            self.assertAlmostEqual(metadata["channel_voltage_mv"][0], 180.0)
             self.assertNotIn("recording_path", metadata)
 
             overview = service.overview(

@@ -1,6 +1,7 @@
 const state = {
   metadata: null,
   channels: [],
+  scaleMode: "auto",
   viewStart: 0,
   viewEnd: 0,
   overviewData: null,
@@ -22,14 +23,19 @@ const windowLabel = document.getElementById("windowLabel");
 const modeLabel = document.getElementById("modeLabel");
 const densityLabel = document.getElementById("densityLabel");
 const channelCountLabel = document.getElementById("channelCountLabel");
+const sourceLabel = document.getElementById("sourceLabel");
+const scaleLabel = document.getElementById("scaleLabel");
 const deviceId = document.getElementById("deviceId");
 const durationLabel = document.getElementById("durationLabel");
 const sampleRateLabel = document.getElementById("sampleRateLabel");
+const voltageLabel = document.getElementById("voltageLabel");
 const centerInput = document.getElementById("centerInput");
 const windowInput = document.getElementById("windowInput");
 const jumpBtn = document.getElementById("jumpBtn");
 const applyChannelsBtn = document.getElementById("applyChannelsBtn");
 const channelGrid = document.getElementById("channelGrid");
+const scaleAutoBtn = document.getElementById("scaleAutoBtn");
+const scaleSharedBtn = document.getElementById("scaleSharedBtn");
 
 const COLORS = [
   "#f5f5f5",
@@ -47,6 +53,47 @@ const DETAIL_BUFFER_REFRESH_MARGIN_RATIO = 0.3;
 const TRACE_BINARY_CONTENT_TYPE = "application/vnd.traceviewer.binary";
 const TRACE_BINARY_MAGIC = "TVB1";
 const textDecoder = new TextDecoder();
+
+function currentValueFromCount(count) {
+  return (count * state.metadata.current_scale) + (state.metadata.current_offset ?? 0);
+}
+
+function currentSpanFromCounts(countSpan) {
+  return Math.abs(countSpan * state.metadata.current_scale);
+}
+
+function currentZeroReferenceCount() {
+  if (!state.metadata.current_scale) {
+    return 0;
+  }
+  return -((state.metadata.current_offset ?? 0) / state.metadata.current_scale);
+}
+
+function formatCurrentValue(count) {
+  return `${currentValueFromCount(count).toFixed(1)} ${state.metadata.current_units}`;
+}
+
+function formatCurrentSpan(countSpan) {
+  return `${currentSpanFromCounts(countSpan).toFixed(1)} ${state.metadata.current_units}`;
+}
+
+function formatVoltageValue(voltageMv) {
+  return `${Number(voltageMv).toFixed(1)} ${state.metadata.voltage_units}`;
+}
+
+function formatModeLabel(mode) {
+  return mode === "raw" ? "Raw Samples" : "Min/Max Envelope";
+}
+
+function formatSourceLabel(source) {
+  return source === "pyramid" ? "Summary Pyramid" : "Chunk Slice";
+}
+
+function applyScaleModeUi() {
+  const isAuto = state.scaleMode === "auto";
+  scaleAutoBtn.classList.toggle("is-active", isAuto);
+  scaleSharedBtn.classList.toggle("is-active", !isAuto);
+}
 
 function setStatus(kind, label) {
   statusBadge.textContent = label;
@@ -195,9 +242,15 @@ function updateLabels() {
   const windowSeconds = samplesToSeconds(sampleCount);
   windowLabel.textContent = `${windowSeconds.toFixed(2)} s`;
   channelCountLabel.textContent = String(state.channels.length);
+  scaleLabel.textContent = state.scaleMode === "auto" ? "Per-Channel Auto" : "Shared Physical";
   if (state.detailData) {
-    modeLabel.textContent = state.detailData.mode;
+    modeLabel.textContent = formatModeLabel(state.detailData.mode);
     densityLabel.textContent = `${state.detailData.samples_per_pixel.toFixed(2)} spp`;
+    sourceLabel.textContent = formatSourceLabel(state.detailData.source);
+  } else {
+    modeLabel.textContent = "-";
+    densityLabel.textContent = "-";
+    sourceLabel.textContent = "-";
   }
   updateBrush();
 }
@@ -318,7 +371,9 @@ async function loadMetadata() {
   deviceId.textContent = metadata.device_id;
   durationLabel.textContent = `${metadata.duration_sec}s`;
   sampleRateLabel.textContent = `${metadata.sample_rate_hz} Hz`;
+  voltageLabel.textContent = `${metadata.voltage_range_mv.min.toFixed(1)} to ${metadata.voltage_range_mv.max.toFixed(1)} ${metadata.voltage_units}`;
   buildChannelGrid(metadata.channels, state.channels);
+  applyScaleModeUi();
   syncInputs();
 }
 
@@ -479,25 +534,92 @@ function rowScale(minValue, maxValue) {
   };
 }
 
-function drawTraceLabel(ctx, rowTop, trace, scale, unitScale) {
+function sharedScaleForRanges(ranges) {
+  if (state.scaleMode !== "shared" || !ranges.length) {
+    return null;
+  }
+  let minCount = Number.POSITIVE_INFINITY;
+  let maxCount = Number.NEGATIVE_INFINITY;
+  for (const range of ranges) {
+    minCount = Math.min(minCount, range.minCount);
+    maxCount = Math.max(maxCount, range.maxCount);
+  }
+  return rowScale(minCount, maxCount);
+}
+
+function countToRowY(value, scale, centerY, availableHeight) {
+  const normalized = (value - scale.centerCount) / scale.span;
+  return centerY - normalized * availableHeight;
+}
+
+function drawZeroReferenceLine(ctx, canvas, rowTop, rowHeight, paddingY, scale) {
+  const zeroCount = currentZeroReferenceCount();
+  if (zeroCount < scale.minCount || zeroCount > scale.maxCount) {
+    return;
+  }
+
+  const availableHeight = rowHeight - paddingY * 2;
+  const centerY = rowTop + rowHeight / 2;
+  const y = countToRowY(zeroCount, scale, centerY, availableHeight);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(0, y);
+  ctx.lineTo(canvas.width, y);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.44)";
+  ctx.font = '10px "IBM Plex Mono", monospace';
+  ctx.textAlign = "right";
+  ctx.fillText(`0 ${state.metadata.current_units}`, canvas.width - 54, y - 4);
+  ctx.restore();
+}
+
+function drawScaleBar(ctx, canvas, rowTop, rowHeight, paddingY, scale) {
+  const x = canvas.width - 16;
+  const yTop = rowTop + paddingY;
+  const yBottom = rowTop + rowHeight - paddingY;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.40)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, yTop);
+  ctx.lineTo(x, yBottom);
+  ctx.moveTo(x - 6, yTop);
+  ctx.lineTo(x + 6, yTop);
+  ctx.moveTo(x - 6, yBottom);
+  ctx.lineTo(x + 6, yBottom);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.58)";
+  ctx.font = '10px "IBM Plex Mono", monospace';
+  ctx.textAlign = "right";
+  ctx.fillText(formatCurrentSpan(scale.maxCount - scale.minCount), x - 10, rowTop + rowHeight - 8);
+  ctx.restore();
+}
+
+function drawTraceLabel(ctx, rowTop, trace, range) {
+  const voltageMv = state.metadata.channel_voltage_mv?.[trace.channel];
+  const voltageLabelText = Number.isFinite(voltageMv) ? ` | ${formatVoltageValue(voltageMv)}` : "";
   ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
   ctx.font = '12px "IBM Plex Mono", monospace';
   ctx.fillText(
-    `Ch ${trace.channel}  ${(scale.dataMin * unitScale).toFixed(1)} to ${(scale.dataMax * unitScale).toFixed(1)} ${state.metadata.current_units}`,
+    `Ch ${trace.channel}${voltageLabelText} | ${formatCurrentValue(range.minCount)} to ${formatCurrentValue(range.maxCount)}`,
     14,
     rowTop + 18,
   );
 }
 
-function drawOverviewTraceRow(ctx, rowIndex, rowCount, trace, mode, color, canvas, unitScale) {
+function drawOverviewTraceRow(ctx, rowIndex, rowCount, trace, mode, color, canvas, traceRange, scale) {
   const rowHeight = canvas.height / rowCount;
   const rowTop = rowHeight * rowIndex;
   const paddingY = 18;
   const availableHeight = rowHeight - paddingY * 2;
-  const scale = rowScale(trace.min_count, trace.max_count);
   const centerY = rowTop + rowHeight / 2;
 
   ctx.save();
+  drawZeroReferenceLine(ctx, canvas, rowTop, rowHeight, paddingY, scale);
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.2;
 
@@ -506,8 +628,7 @@ function drawOverviewTraceRow(ctx, rowIndex, rowCount, trace, mode, color, canva
     const values = trace.values;
     for (let index = 0; index < values.length; index += 1) {
       const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * canvas.width;
-      const normalized = (values[index] - scale.centerCount) / scale.span;
-      const y = centerY - normalized * availableHeight;
+      const y = countToRowY(values[index], scale, centerY, availableHeight);
       if (index === 0) {
         ctx.moveTo(x, y);
       } else {
@@ -520,17 +641,16 @@ function drawOverviewTraceRow(ctx, rowIndex, rowCount, trace, mode, color, canva
     ctx.beginPath();
     for (let index = 0; index < count; index += 1) {
       const x = count <= 1 ? 0 : (index / (count - 1)) * canvas.width;
-      const minNorm = (trace.mins[index] - scale.centerCount) / scale.span;
-      const maxNorm = (trace.maxs[index] - scale.centerCount) / scale.span;
-      const yMin = centerY - minNorm * availableHeight;
-      const yMax = centerY - maxNorm * availableHeight;
+      const yMin = countToRowY(trace.mins[index], scale, centerY, availableHeight);
+      const yMax = countToRowY(trace.maxs[index], scale, centerY, availableHeight);
       ctx.moveTo(x, yMin);
       ctx.lineTo(x, yMax);
     }
     ctx.stroke();
   }
 
-  drawTraceLabel(ctx, rowTop, trace, scale, unitScale);
+  drawTraceLabel(ctx, rowTop, trace, traceRange);
+  drawScaleBar(ctx, canvas, rowTop, rowHeight, paddingY, scale);
   ctx.restore();
 }
 
@@ -600,24 +720,16 @@ function canRenderVisibleDetailFromBuffer(start = state.viewStart, end = state.v
   return state.detailData.mode === detailModeForSpan(end - start, detailCanvas.width);
 }
 
-function drawDetailTraceRow(ctx, rowIndex, rowCount, trace, color, canvas, unitScale) {
+function drawDetailTraceRow(ctx, rowIndex, rowCount, trace, color, canvas, bounds, range, scale) {
   const rowHeight = canvas.height / rowCount;
   const rowTop = rowHeight * rowIndex;
   const paddingY = 18;
   const availableHeight = rowHeight - paddingY * 2;
   const centerY = rowTop + rowHeight / 2;
-  const visibleStart = state.viewStart;
-  const visibleEnd = state.viewEnd;
   const mode = state.detailData.mode;
-  const bounds = mode === "raw"
-    ? rawSliceBounds(trace, visibleStart, visibleEnd)
-    : envelopeSliceBounds(trace, visibleStart, visibleEnd);
-  const range = mode === "raw"
-    ? traceRangeFromRaw(trace, bounds)
-    : traceRangeFromEnvelope(trace, bounds);
-  const scale = rowScale(range.minCount, range.maxCount);
 
   ctx.save();
+  drawZeroReferenceLine(ctx, canvas, rowTop, rowHeight, paddingY, scale);
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.2;
 
@@ -627,8 +739,7 @@ function drawDetailTraceRow(ctx, rowIndex, rowCount, trace, color, canvas, unitS
     for (let index = bounds.startIndex; index < bounds.endIndex; index += 1) {
       const relativeIndex = index - bounds.startIndex;
       const x = visibleCount <= 1 ? 0 : (relativeIndex / (visibleCount - 1)) * canvas.width;
-      const normalized = (trace.values[index] - scale.centerCount) / scale.span;
-      const y = centerY - normalized * availableHeight;
+      const y = countToRowY(trace.values[index], scale, centerY, availableHeight);
       if (relativeIndex === 0) {
         ctx.moveTo(x, y);
       } else {
@@ -642,17 +753,16 @@ function drawDetailTraceRow(ctx, rowIndex, rowCount, trace, color, canvas, unitS
     for (let index = bounds.startIndex; index < bounds.endIndex; index += 1) {
       const relativeIndex = index - bounds.startIndex;
       const x = visibleCount <= 1 ? 0 : (relativeIndex / (visibleCount - 1)) * canvas.width;
-      const minNorm = (trace.mins[index] - scale.centerCount) / scale.span;
-      const maxNorm = (trace.maxs[index] - scale.centerCount) / scale.span;
-      const yMin = centerY - minNorm * availableHeight;
-      const yMax = centerY - maxNorm * availableHeight;
+      const yMin = countToRowY(trace.mins[index], scale, centerY, availableHeight);
+      const yMax = countToRowY(trace.maxs[index], scale, centerY, availableHeight);
       ctx.moveTo(x, yMin);
       ctx.lineTo(x, yMax);
     }
     ctx.stroke();
   }
 
-  drawTraceLabel(ctx, rowTop, trace, scale, unitScale);
+  drawTraceLabel(ctx, rowTop, trace, range);
+  drawScaleBar(ctx, canvas, rowTop, rowHeight, paddingY, scale);
   ctx.restore();
 }
 
@@ -671,7 +781,13 @@ function renderOverview() {
   const ctx = overviewCanvas.getContext("2d");
   clearCanvas(ctx, overviewCanvas);
   drawGrid(ctx, overviewCanvas, state.overviewData.traces.length);
+  const ranges = state.overviewData.traces.map((trace) => ({
+    minCount: trace.min_count,
+    maxCount: trace.max_count,
+  }));
+  const sharedScale = sharedScaleForRanges(ranges);
   state.overviewData.traces.forEach((trace, index) => {
+    const traceRange = ranges[index];
     drawOverviewTraceRow(
       ctx,
       index,
@@ -680,7 +796,8 @@ function renderOverview() {
       "envelope",
       channelColor(index),
       overviewCanvas,
-      state.metadata.current_scale,
+      traceRange,
+      sharedScale ?? rowScale(traceRange.minCount, traceRange.maxCount),
     );
   });
   updateBrush();
@@ -694,15 +811,29 @@ function renderDetail() {
   const ctx = detailCanvas.getContext("2d");
   clearCanvas(ctx, detailCanvas);
   drawGrid(ctx, detailCanvas, state.detailData.traces.length);
-  state.detailData.traces.forEach((trace, index) => {
+  const visibleStart = state.viewStart;
+  const visibleEnd = state.viewEnd;
+  const traceContexts = state.detailData.traces.map((trace) => {
+    const bounds = state.detailData.mode === "raw"
+      ? rawSliceBounds(trace, visibleStart, visibleEnd)
+      : envelopeSliceBounds(trace, visibleStart, visibleEnd);
+    const range = state.detailData.mode === "raw"
+      ? traceRangeFromRaw(trace, bounds)
+      : traceRangeFromEnvelope(trace, bounds);
+    return { trace, bounds, range };
+  });
+  const sharedScale = sharedScaleForRanges(traceContexts.map((context) => context.range));
+  traceContexts.forEach((context, index) => {
     drawDetailTraceRow(
       ctx,
       index,
       state.detailData.traces.length,
-      trace,
+      context.trace,
       channelColor(index),
       detailCanvas,
-      state.metadata.current_scale,
+      context.bounds,
+      context.range,
+      sharedScale ?? rowScale(context.range.minCount, context.range.maxCount),
     );
   });
 }
@@ -827,6 +958,20 @@ function attachControls() {
   document.getElementById("panRightBtn").addEventListener("click", () => pan(0.35));
   document.getElementById("zoomInBtn").addEventListener("click", () => zoom(0.6));
   document.getElementById("zoomOutBtn").addEventListener("click", () => zoom(1.6));
+  scaleAutoBtn.addEventListener("click", () => {
+    state.scaleMode = "auto";
+    applyScaleModeUi();
+    renderOverview();
+    renderDetailFromBufferIfAvailable();
+    updateLabels();
+  });
+  scaleSharedBtn.addEventListener("click", () => {
+    state.scaleMode = "shared";
+    applyScaleModeUi();
+    renderOverview();
+    renderDetailFromBufferIfAvailable();
+    updateLabels();
+  });
 
   jumpBtn.addEventListener("click", () => {
     const centerSeconds = Number(centerInput.value);
