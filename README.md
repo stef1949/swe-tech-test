@@ -89,6 +89,12 @@ py trace_viewer_server.py --generate-if-missing
 
 Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
+To bind to a non-loopback interface such as `0.0.0.0`, pass `--allow-remote` explicitly:
+
+```bash
+ py trace_viewer_server.py --host 0.0.0.0 --allow-remote
+```
+
 Available endpoints:
 
 - `GET /api/metadata`

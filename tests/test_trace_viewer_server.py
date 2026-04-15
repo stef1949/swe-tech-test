@@ -5,6 +5,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import zarr
@@ -36,7 +37,12 @@ def decode_trace_binary(payload: bytes) -> dict[str, object]:
     return header
 
 
-def create_fixture(recording_path: Path) -> Path:
+def create_fixture(
+    recording_path: Path,
+    *,
+    current_dtype: str = "int16",
+    voltage_dtype: str = "int16",
+) -> Path:
     store = zarr.storage.LocalStore(str(recording_path))
     root = zarr.create_group(store=store, zarr_format=3)
     root.attrs.update(
@@ -56,32 +62,32 @@ def create_fixture(recording_path: Path) -> Path:
     current_arr = root.create_array(
         name="current_data",
         shape=(4, 4000),
-        dtype="int16",
+        dtype=current_dtype,
         chunks=(1, 50),
         shards=(1, 1000),
         compressors=BloscCodec(
             cname="zstd",
             clevel=1,
             shuffle=BloscShuffle.shuffle,
-            typesize=2,
+            typesize=np.dtype(current_dtype).itemsize,
         ),
     )
     voltage_arr = root.create_array(
         name="voltage_data",
         shape=(4, 4000),
-        dtype="int16",
+        dtype=voltage_dtype,
         chunks=(1, 100),
         shards=(1, 2000),
         compressors=BloscCodec(
             cname="zstd",
             clevel=1,
             shuffle=BloscShuffle.shuffle,
-            typesize=2,
+            typesize=np.dtype(voltage_dtype).itemsize,
         ),
     )
 
-    current_data = np.arange(4 * 4000, dtype=np.int16).reshape(4, 4000)
-    voltage_data = np.full((4, 4000), 720, dtype=np.int16)
+    current_data = np.arange(4 * 4000, dtype=np.int16).reshape(4, 4000).astype(current_dtype)
+    voltage_data = np.full((4, 4000), 720, dtype=np.int16).astype(voltage_dtype)
     current_arr[:] = current_data
     voltage_arr[:] = voltage_data
     return recording_path
@@ -105,6 +111,10 @@ class TraceViewerServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             trace_viewer_server.parse_channel_list("7", 4)
 
+    def test_parse_channel_list_rejects_excessive_channel_tokens(self) -> None:
+        with self.assertRaises(ValueError):
+            trace_viewer_server.parse_channel_list(",".join(["0"] * 65), 4)
+
     def test_reduce_to_envelope_computes_min_and_max(self) -> None:
         data = np.array([3, 7, 2, 8, 4, 9], dtype=np.int16)
         mins, maxs = trace_viewer_server.reduce_to_envelope(data, 3)
@@ -114,6 +124,29 @@ class TraceViewerServerTests(unittest.TestCase):
     def test_detail_mode_switches_at_density_threshold(self) -> None:
         self.assertEqual(trace_viewer_server.detail_mode_for_window(1000, 500), "raw")
         self.assertEqual(trace_viewer_server.detail_mode_for_window(5000, 500), "envelope")
+
+    def test_validate_bind_host_rejects_non_loopback_without_allow_remote(self) -> None:
+        trace_viewer_server.validate_bind_host("127.0.0.1", allow_remote=False)
+        with self.assertRaises(SystemExit):
+            trace_viewer_server.validate_bind_host("0.0.0.0", allow_remote=False)
+        trace_viewer_server.validate_bind_host("0.0.0.0", allow_remote=True)
+
+    def test_resolve_static_path_blocks_sibling_prefix_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            viewer_dir = root / "viewer"
+            viewer_dir.mkdir()
+            (viewer_dir / "index.html").write_text("ok", encoding="utf-8")
+            secret_dir = root / "viewer-secrets"
+            secret_dir.mkdir()
+            (secret_dir / "secret.txt").write_text("leak", encoding="utf-8")
+
+            with patch.object(trace_viewer_server, "VIEWER_DIR", viewer_dir):
+                self.assertIsNone(trace_viewer_server.resolve_static_path("/../viewer-secrets/secret.txt"))
+                self.assertEqual(
+                    trace_viewer_server.resolve_static_path("/index.html"),
+                    (viewer_dir / "index.html").resolve(),
+                )
 
     def test_service_metadata_overview_and_detail(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -125,6 +158,7 @@ class TraceViewerServerTests(unittest.TestCase):
             self.assertEqual(metadata["default_channels"], [0, 1, 2, 3])
             self.assertEqual(metadata["current_count_min"], -32768)
             self.assertEqual(metadata["current_count_max"], 32767)
+            self.assertNotIn("recording_path", metadata)
 
             overview = service.overview(
                 {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
@@ -143,12 +177,14 @@ class TraceViewerServerTests(unittest.TestCase):
                 {"start": ["0"], "end": ["20"], "width_px": ["200"], "channels": ["0,1"]}
             )
             self.assertEqual(detail_raw["mode"], "raw")
+            self.assertEqual(detail_raw["source"], "slice")
             self.assertIn("values", detail_raw["traces"][0])
 
             detail_envelope = service.detail(
                 {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
             )
             self.assertEqual(detail_envelope["mode"], "envelope")
+            self.assertEqual(detail_envelope["source"], "slice")
             self.assertIn("mins", detail_envelope["traces"][0])
 
             detail_fractional = service.detail(
@@ -171,6 +207,51 @@ class TraceViewerServerTests(unittest.TestCase):
             )
             self.assertEqual(detail_binary["mode"], "raw")
             self.assertEqual(detail_binary["traces"][0]["values"].shape[0], 20)
+
+    def test_detail_uses_pyramid_for_wide_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
+            service = trace_viewer_server.TraceDataService(recording_path)
+
+            with patch.object(trace_viewer_server, "MAX_DETAIL_SLICE_SAMPLES_PER_CHANNEL", 100):
+                detail = service.detail(
+                    {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
+                )
+
+            self.assertEqual(detail["mode"], "envelope")
+            self.assertEqual(detail["source"], "pyramid")
+
+    def test_detail_rejects_excessive_width(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
+            service = trace_viewer_server.TraceDataService(recording_path)
+
+            with self.assertRaises(ValueError):
+                service.detail(
+                    {
+                        "start": ["0"],
+                        "end": ["100"],
+                        "width_px": [str(trace_viewer_server.MAX_WIDTH_PX + 1)],
+                        "channels": ["0,1"],
+                    }
+                )
+
+    def test_json_budget_rejects_large_detail_responses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
+            service = trace_viewer_server.TraceDataService(recording_path)
+
+            with patch.object(trace_viewer_server, "MAX_JSON_TRACE_POINTS", 50):
+                with self.assertRaises(ValueError):
+                    service.detail(
+                        {"start": ["0"], "end": ["40"], "width_px": ["200"], "channels": ["0,1"]}
+                    )
+
+    def test_service_rejects_non_int16_recording(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recording_path = create_fixture(Path(tmpdir) / "fixture.zarr", current_dtype="float32")
+            with self.assertRaises(ValueError):
+                trace_viewer_server.TraceDataService(recording_path)
 
     def test_write_json_ignores_client_disconnects(self) -> None:
         class FakeWfile:

@@ -83,7 +83,7 @@ body {
 }
 
 .metric-card {
-  min-height: 136px;
+  min-height: 68px;
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -285,9 +285,9 @@ button:focus-visible {
 .channel-grid {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0.0, 1fr));
   gap: 8px;
-  max-height: 270px;
+  max-height: 540px;
   overflow: auto;
   padding-right: 4px;
 }
@@ -354,6 +354,7 @@ canvas {
   min-height: 680px;
   cursor: grab;
   user-select: none;
+  -webkit-user-select: none;
   touch-action: none;
 }
 

@@ -223,6 +223,10 @@ async function fetchJson(path, controller) {
 }
 
 function parseBinaryTracePayload(buffer) {
+  if (buffer.byteLength < 12) {
+    throw new Error("Incomplete binary trace payload");
+  }
+
   const view = new DataView(buffer);
   const magic = textDecoder.decode(buffer.slice(0, 4));
   if (magic !== TRACE_BINARY_MAGIC) {
@@ -231,25 +235,56 @@ function parseBinaryTracePayload(buffer) {
 
   const headerLength = view.getUint32(4, true);
   const payloadOffset = view.getUint32(8, true);
+  if (headerLength > (buffer.byteLength - 12)) {
+    throw new Error("Invalid binary trace header length");
+  }
+  if (payloadOffset < (12 + headerLength) || payloadOffset > buffer.byteLength || payloadOffset % 2 !== 0) {
+    throw new Error("Invalid binary trace payload offset");
+  }
+
   const headerBytes = new Uint8Array(buffer, 12, headerLength);
   const payload = JSON.parse(textDecoder.decode(headerBytes));
+  if (!payload || !Array.isArray(payload.traces)) {
+    throw new Error("Invalid binary trace header");
+  }
+  if ((buffer.byteLength - payloadOffset) % 2 !== 0) {
+    throw new Error("Invalid binary trace payload size");
+  }
+
   const body = new Int16Array(buffer, payloadOffset);
   let cursor = 0;
 
   payload.traces = payload.traces.map((trace) => {
     const nextTrace = { ...trace };
+    const length = Number(trace.length);
+    if (!Number.isInteger(length) || length < 0) {
+      throw new Error("Invalid binary trace length");
+    }
+
     if (payload.mode === "raw") {
-      nextTrace.values = body.subarray(cursor, cursor + trace.length);
-      cursor += trace.length;
+      const end = cursor + length;
+      if (end > body.length) {
+        throw new Error("Binary trace payload is truncated");
+      }
+      nextTrace.values = body.subarray(cursor, end);
+      cursor = end;
       return nextTrace;
     }
 
-    nextTrace.mins = body.subarray(cursor, cursor + trace.length);
-    cursor += trace.length;
-    nextTrace.maxs = body.subarray(cursor, cursor + trace.length);
-    cursor += trace.length;
+    const minsEnd = cursor + length;
+    const maxsEnd = minsEnd + length;
+    if (maxsEnd > body.length) {
+      throw new Error("Binary trace payload is truncated");
+    }
+    nextTrace.mins = body.subarray(cursor, minsEnd);
+    nextTrace.maxs = body.subarray(minsEnd, maxsEnd);
+    cursor = maxsEnd;
     return nextTrace;
   });
+
+  if (cursor !== body.length) {
+    throw new Error("Binary trace payload has trailing data");
+  }
 
   return payload;
 }

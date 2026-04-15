@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import math
 import mimetypes
@@ -10,7 +11,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -32,6 +33,17 @@ TRACE_BINARY_CONTENT_TYPE = "application/vnd.traceviewer.binary"
 OVERVIEW_PYRAMID_MIN_BUCKETS = 1024
 OVERVIEW_PYRAMID_MULTIPLIER = 8
 CLIENT_DISCONNECT_ERRNOS = {32, 54, 104, 10053, 10054}
+MAX_WIDTH_PX = 8192
+MAX_CHANNEL_QUERY_LENGTH = 512
+MAX_CHANNEL_TOKENS = 64
+MAX_JSON_TRACE_POINTS = 250_000
+MAX_BINARY_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_DETAIL_SLICE_SAMPLES_PER_CHANNEL = 250_000
+MAX_RECORDING_CHANNELS = 256
+MAX_RECORDING_SAMPLES_PER_CHANNEL = 20_000_000
+MAX_CONCURRENT_DETAIL_REQUESTS = 4
+DETAIL_SLOT_ACQUIRE_TIMEOUT_SEC = 0.5
+REQUEST_SOCKET_TIMEOUT_SEC = 10.0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -40,6 +52,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default=DEFAULT_HOST, help="Interface to bind.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind.")
     parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow binding to a non-loopback interface such as 0.0.0.0.",
+    )
+    parser.add_argument(
         "--generate-if-missing",
         action="store_true",
         help="Generate the default recording if it does not exist.",
@@ -47,15 +64,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized in {"localhost", "127.0.0.1", "::1"}:
+        return True
+
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_bind_host(host: str, allow_remote: bool) -> None:
+    if allow_remote or is_loopback_host(host):
+        return
+    raise SystemExit(
+        f"Refusing to bind {host!r} without --allow-remote. "
+        "Use a loopback host for local-only access or pass --allow-remote explicitly."
+    )
+
+
 def parse_channel_list(raw_value: str | None, total_channels: int) -> list[int]:
     if not raw_value:
         return list(range(min(DEFAULT_VISIBLE_CHANNELS, total_channels)))
+    if len(raw_value) > MAX_CHANNEL_QUERY_LENGTH:
+        raise ValueError("channels parameter is too long")
 
     channels: list[int] = []
+    token_count = 0
     for part in raw_value.split(","):
         token = part.strip()
         if not token:
             continue
+        token_count += 1
+        if token_count > MAX_CHANNEL_TOKENS:
+            raise ValueError("too many channels requested")
         channel = int(token)
         if channel < 0 or channel >= total_channels:
             raise ValueError(f"channel out of range: {channel}")
@@ -144,6 +187,31 @@ def detail_mode_for_window(sample_count: int, width_px: int) -> str:
     if samples_per_pixel(sample_count, width_px) <= DETAIL_MAX_SAMPLES_PER_PIXEL:
         return "raw"
     return "envelope"
+
+
+def estimate_trace_point_count(mode: str, sample_count: int, width_px: int, channel_count: int) -> int:
+    if mode == "raw":
+        return sample_count * channel_count
+    bucket_count = max(1, min(width_px, sample_count))
+    return bucket_count * channel_count * 2
+
+
+def resolve_static_path(raw_path: str) -> Path | None:
+    viewer_root = VIEWER_DIR.resolve()
+    normalized = raw_path.replace("\\", "/").lstrip("/")
+    relative = PurePosixPath(normalized) if normalized else PurePosixPath("index.html")
+    candidate = viewer_root.joinpath(*relative.parts)
+    if candidate.is_dir():
+        candidate = candidate / "index.html"
+
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        return None
+
+    if not resolved.is_relative_to(viewer_root) or not resolved.is_file():
+        return None
+    return resolved
 
 
 class LRUCache:
@@ -254,6 +322,7 @@ class TraceDataService:
         self.current_arr = root["current_data"]
         self.voltage_arr = root["voltage_data"]
         self.attrs = {str(key): root.attrs[key] for key in root.attrs.keys()}
+        self._validate_recording_layout()
         self.total_channels = int(self.current_arr.shape[0])
         self.total_samples = int(self.current_arr.shape[1])
         self.sample_rate_hz = float(self.attrs["sample_rate_hz"])
@@ -266,7 +335,6 @@ class TraceDataService:
         default_window_samples = int(self.sample_rate_hz * DEFAULT_DETAIL_SECONDS)
         self._metadata = {
             "device_id": self.attrs.get("device_id"),
-            "recording_path": str(self.input_path),
             "channels": self.total_channels,
             "total_samples": self.total_samples,
             "sample_rate_hz": self.sample_rate_hz,
@@ -290,13 +358,65 @@ class TraceDataService:
     def metadata(self) -> dict[str, Any]:
         return self._metadata
 
+    def _validate_recording_layout(self) -> None:
+        if self.current_arr.ndim != 2 or self.voltage_arr.ndim != 2:
+            raise ValueError("recording arrays must be two-dimensional")
+        if self.current_arr.shape != self.voltage_arr.shape:
+            raise ValueError("current_data and voltage_data must have matching shapes")
+        if np.dtype(self.current_arr.dtype) != np.dtype(np.int16):
+            raise ValueError("current_data must use int16 samples")
+        if np.dtype(self.voltage_arr.dtype) != np.dtype(np.int16):
+            raise ValueError("voltage_data must use int16 samples")
+
+        total_channels = int(self.current_arr.shape[0])
+        total_samples = int(self.current_arr.shape[1])
+        if total_channels <= 0 or total_samples <= 0:
+            raise ValueError("recording arrays must be non-empty")
+        if total_channels > MAX_RECORDING_CHANNELS:
+            raise ValueError(f"recording has too many channels: {total_channels}")
+        if total_samples > MAX_RECORDING_SAMPLES_PER_CHANNEL:
+            raise ValueError(f"recording has too many samples per channel: {total_samples}")
+
+        try:
+            sample_rate_hz = float(self.attrs["sample_rate_hz"])
+            current_scale = float(self.attrs["current_scale"])
+            current_units = str(self.attrs["current_units"])
+            duration_sec = float(self.attrs["duration_sec"])
+        except KeyError as exc:
+            raise ValueError(f"missing required recording attribute: {exc.args[0]}") from exc
+
+        if not math.isfinite(sample_rate_hz) or sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be a positive finite number")
+        if not math.isfinite(current_scale) or current_scale <= 0:
+            raise ValueError("current_scale must be a positive finite number")
+        if not current_units:
+            raise ValueError("current_units must be a non-empty string")
+        if not math.isfinite(duration_sec) or duration_sec <= 0:
+            raise ValueError("duration_sec must be a positive finite number")
+
     def _normalize_request(self, query: dict[str, list[str]]) -> WindowRequest:
         start = parse_int_param(query.get("start", ["0"])[0], "start")
         end = parse_int_param(query.get("end", [str(self.total_samples)])[0], "end")
         width_px = max(1, parse_int_param(query.get("width_px", [str(DEFAULT_WIDTH_PX)])[0], "width_px"))
+        if width_px > MAX_WIDTH_PX:
+            raise ValueError(f"width_px too large: {width_px} (max {MAX_WIDTH_PX})")
         start, end = clamp_window(start, end, self.total_samples)
         channels = tuple(parse_channel_list(query.get("channels", [None])[0], self.total_channels))
         return WindowRequest(start=start, end=end, width_px=width_px, channels=channels)
+
+    def _enforce_response_budget(self, request: WindowRequest, mode: str, response_format: str) -> None:
+        point_count = estimate_trace_point_count(
+            mode,
+            request.end - request.start,
+            request.width_px,
+            len(request.channels),
+        )
+        if response_format == "json" and point_count > MAX_JSON_TRACE_POINTS:
+            raise ValueError(
+                "requested response is too large for JSON; reduce width, channels, or window span, or use format=binary"
+            )
+        if response_format == "binary" and point_count * np.dtype(np.int16).itemsize > MAX_BINARY_RESPONSE_BYTES:
+            raise ValueError("requested response is too large; reduce width, channels, or window span")
 
     def _read_channel_slice(self, channel: int, start: int, end: int) -> np.ndarray:
         return np.asarray(self.current_arr[channel, start:end], dtype=np.int16)
@@ -367,7 +487,13 @@ class TraceDataService:
                 return level
         return self._overview_levels[-1]
 
-    def _build_overview_payload(self, request: WindowRequest, cache_status: str = "miss") -> dict[str, Any]:
+    def _build_pyramid_payload(
+        self,
+        request: WindowRequest,
+        *,
+        source: str,
+        cache_status: str | None = None,
+    ) -> dict[str, Any]:
         level = self._select_overview_level(request.width_px)
         traces = []
         total_span = max(1, self.total_samples)
@@ -392,13 +518,13 @@ class TraceDataService:
 
         returned_bucket_count = traces[0]["mins"].shape[0] if traces else 0
 
-        return {
+        response = {
             "mode": "envelope",
-            "cache": cache_status,
-            "source": "pyramid",
+            "source": source,
             "start": request.start,
             "end": request.end,
             "sample_count": request.end - request.start,
+            "seconds": round((request.end - request.start) / self.sample_rate_hz, 3),
             "samples_per_pixel": round(samples_per_pixel(request.end - request.start, request.width_px), 3),
             "width_px": request.width_px,
             "bucket_count": returned_bucket_count,
@@ -407,10 +533,23 @@ class TraceDataService:
             "current_units": self.current_units,
             "traces": traces,
         }
+        if cache_status is not None:
+            response["cache"] = cache_status
+        return response
 
-    def _build_detail_payload(self, request: WindowRequest) -> dict[str, Any]:
+    def _detail_strategy(self, request: WindowRequest) -> tuple[str, str]:
         sample_count = request.end - request.start
-        render_mode = detail_mode_for_window(sample_count, request.width_px)
+        if sample_count > MAX_DETAIL_SLICE_SAMPLES_PER_CHANNEL:
+            return "pyramid", "envelope"
+        return "slice", detail_mode_for_window(sample_count, request.width_px)
+
+    def _build_detail_payload(self, request: WindowRequest, response_format: str) -> dict[str, Any]:
+        sample_count = request.end - request.start
+        source, render_mode = self._detail_strategy(request)
+        self._enforce_response_budget(request, render_mode, response_format)
+        if source == "pyramid":
+            return self._build_pyramid_payload(request, source="pyramid")
+
         traces = []
         for channel in request.channels:
             data = self._read_channel_slice(channel, request.start, request.end)
@@ -439,6 +578,7 @@ class TraceDataService:
 
         response = {
             "mode": render_mode,
+            "source": "slice",
             "start": request.start,
             "end": request.end,
             "sample_count": sample_count,
@@ -456,37 +596,39 @@ class TraceDataService:
 
     def overview(self, query: dict[str, list[str]]) -> dict[str, Any]:
         request = self._normalize_request(query)
+        self._enforce_response_budget(request, "envelope", "json")
         cache_key = ("overview", request.start, request.end, request.width_px, request.channels)
         with self._cache_lock:
             cached = self._overview_cache.get(cache_key)
         if cached is not None:
             return jsonify_trace_payload({**cached, "cache": "hit"})
 
-        response = self._build_overview_payload(request)
+        response = self._build_pyramid_payload(request, source="pyramid", cache_status="miss")
         with self._cache_lock:
             self._overview_cache.set(cache_key, response)
         return jsonify_trace_payload(response)
 
     def detail(self, query: dict[str, list[str]]) -> dict[str, Any]:
         request = self._normalize_request(query)
-        return jsonify_trace_payload(self._build_detail_payload(request))
+        return jsonify_trace_payload(self._build_detail_payload(request, response_format="json"))
 
     def overview_binary(self, query: dict[str, list[str]]) -> bytes:
         request = self._normalize_request(query)
+        self._enforce_response_budget(request, "envelope", "binary")
         cache_key = ("overview", request.start, request.end, request.width_px, request.channels)
         with self._cache_lock:
             cached = self._overview_cache.get(cache_key)
         if cached is not None:
             return encode_trace_payload({**cached, "cache": "hit"})
 
-        response = self._build_overview_payload(request)
+        response = self._build_pyramid_payload(request, source="pyramid", cache_status="miss")
         with self._cache_lock:
             self._overview_cache.set(cache_key, response)
         return encode_trace_payload(response)
 
     def detail_binary(self, query: dict[str, list[str]]) -> bytes:
         request = self._normalize_request(query)
-        return encode_trace_payload(self._build_detail_payload(request))
+        return encode_trace_payload(self._build_detail_payload(request, response_format="binary"))
 
 
 class TraceViewerHandler(BaseHTTPRequestHandler):
@@ -503,8 +645,8 @@ class TraceViewerHandler(BaseHTTPRequestHandler):
             return self._handle_json(lambda: self.server.data_service.overview(query))
         if parsed.path == "/api/detail":
             if query.get("format", ["json"])[0] == "binary":
-                return self._handle_binary(lambda: self.server.data_service.detail_binary(query))
-            return self._handle_json(lambda: self.server.data_service.detail(query))
+                return self._handle_detail(lambda: self.server.data_service.detail_binary(query), binary=True)
+            return self._handle_detail(lambda: self.server.data_service.detail(query), binary=False)
         if parsed.path == "/health":
             return self._write_json({"ok": True})
         return self._serve_static(parsed.path)
@@ -540,6 +682,21 @@ class TraceViewerHandler(BaseHTTPRequestHandler):
             return
         self._write_binary(payload)
 
+    def _handle_detail(self, callback: Any, *, binary: bool) -> None:
+        if not self.server.detail_slots.acquire(timeout=DETAIL_SLOT_ACQUIRE_TIMEOUT_SEC):
+            self._write_json(
+                {"error": "server is busy processing other detail requests"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        try:
+            if binary:
+                self._handle_binary(callback)
+            else:
+                self._handle_json(callback)
+        finally:
+            self.server.detail_slots.release()
+
     def _write_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         try:
@@ -568,13 +725,10 @@ class TraceViewerHandler(BaseHTTPRequestHandler):
             raise
 
     def _serve_static(self, raw_path: str) -> None:
-        relative = raw_path.lstrip("/") or "index.html"
-        candidate = (VIEWER_DIR / relative).resolve()
-        if not str(candidate).startswith(str(VIEWER_DIR.resolve())) or not candidate.exists():
+        candidate = resolve_static_path(raw_path)
+        if candidate is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        if candidate.is_dir():
-            candidate = candidate / "index.html"
         body = candidate.read_bytes()
         content_type, _ = mimetypes.guess_type(candidate.name)
         try:
@@ -590,12 +744,23 @@ class TraceViewerHandler(BaseHTTPRequestHandler):
 
 
 class TraceViewerServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = 64
+
     def __init__(self, server_address: tuple[str, int], data_service: TraceDataService):
         super().__init__(server_address, TraceViewerHandler)
         self.data_service = data_service
+        self.detail_slots = threading.BoundedSemaphore(MAX_CONCURRENT_DETAIL_REQUESTS)
+
+    def get_request(self) -> tuple[Any, Any]:
+        request, client_address = super().get_request()
+        request.settimeout(REQUEST_SOCKET_TIMEOUT_SEC)
+        return request, client_address
 
 
-def run_server(host: str, port: int, input_path: Path, generate_if_missing: bool) -> None:
+def run_server(host: str, port: int, input_path: Path, generate_if_missing: bool, allow_remote: bool) -> None:
+    validate_bind_host(host, allow_remote)
     ensure_recording_exists(input_path, generate_if_missing)
     data_service = TraceDataService(input_path)
     httpd = TraceViewerServer((host, port), data_service)
@@ -612,7 +777,7 @@ def run_server(host: str, port: int, input_path: Path, generate_if_missing: bool
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     input_path = args.input.resolve()
-    run_server(args.host, args.port, input_path, args.generate_if_missing)
+    run_server(args.host, args.port, input_path, args.generate_if_missing, args.allow_remote)
     return 0
 
 
