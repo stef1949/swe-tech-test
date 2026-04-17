@@ -23,26 +23,31 @@ from analyze_trace_viewer import DEFAULT_INPUT, ensure_recording_exists
 VIEWER_DIR = Path(__file__).parent / "viewer"
 DEFAULT_PORT = 8000
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_VISIBLE_CHANNELS = 6
-DEFAULT_DETAIL_SECONDS = 1.0
+DEFAULT_VISIBLE_CHANNELS = 10
+# Aim for a narrow inspection window on load, but cap it by the raw-friendly
+# sample budget for the default viewport so the detail pane starts in a useful state.
+DEFAULT_DETAIL_SECONDS = 5.0
 DEFAULT_WIDTH_PX = 1200
 DETAIL_MAX_SAMPLES_PER_PIXEL = 2.5
-OVERVIEW_CACHE_SIZE = 16
+OVERVIEW_CACHE_SIZE = 32
 TRACE_BINARY_MAGIC = b"TVB1"
 TRACE_BINARY_CONTENT_TYPE = "application/vnd.traceviewer.binary"
 OVERVIEW_PYRAMID_MIN_BUCKETS = 1024
-OVERVIEW_PYRAMID_MULTIPLIER = 8
+OVERVIEW_PYRAMID_MULTIPLIER = 64
+PYRAMID_VIEWPORT_OVERSAMPLE = 1.0
 CLIENT_DISCONNECT_ERRNOS = {32, 54, 104, 10053, 10054}
 MAX_WIDTH_PX = 8192
 MAX_CHANNEL_QUERY_LENGTH = 512
 MAX_CHANNEL_TOKENS = 64
 MAX_JSON_TRACE_POINTS = 250_000
 MAX_BINARY_RESPONSE_BYTES = 8 * 1024 * 1024
-MAX_DETAIL_SLICE_SAMPLES_PER_CHANNEL = 250_000
+# Once a detail request spans several logical chunks per channel, prefer the
+# precomputed summary pyramid instead of rescanning raw samples on demand.
+MAX_DETAIL_SLICE_SAMPLES_PER_CHANNEL = 200_000
 MAX_RECORDING_CHANNELS = 256
 MAX_RECORDING_SAMPLES_PER_CHANNEL = 20_000_000
-MAX_CONCURRENT_DETAIL_REQUESTS = 4
-DETAIL_SLOT_ACQUIRE_TIMEOUT_SEC = 0.5
+MAX_CONCURRENT_DETAIL_REQUESTS = 2
+DETAIL_SLOT_ACQUIRE_TIMEOUT_SEC = 0.2
 REQUEST_SOCKET_TIMEOUT_SEC = 10.0
 
 
@@ -338,7 +343,13 @@ class TraceDataService:
         self._overview_cache = LRUCache(OVERVIEW_CACHE_SIZE)
         self._cache_lock = threading.Lock()
         self._overview_levels = self._build_overview_levels()
-        default_window_samples = int(self.sample_rate_hz * DEFAULT_DETAIL_SECONDS)
+        default_window_samples = int(
+            min(
+                self.sample_rate_hz * DEFAULT_DETAIL_SECONDS,
+                DEFAULT_WIDTH_PX * DETAIL_MAX_SAMPLES_PER_PIXEL,
+            )
+        )
+        default_window_start = max(0, (self.total_samples - default_window_samples) // 2)
         self._metadata = {
             "device_id": self.attrs.get("device_id"),
             "channels": self.total_channels,
@@ -360,8 +371,8 @@ class TraceDataService:
             },
             "default_channels": list(range(min(DEFAULT_VISIBLE_CHANNELS, self.total_channels))),
             "default_window": {
-                "start": 0,
-                "end": min(self.total_samples, default_window_samples),
+                "start": default_window_start,
+                "end": min(self.total_samples, default_window_start + default_window_samples),
             },
             "detail_threshold": {
                 "samples_per_pixel": DETAIL_MAX_SAMPLES_PER_PIXEL,
@@ -504,9 +515,15 @@ class TraceDataService:
         ]
         return tuple(levels)
 
-    def _select_overview_level(self, width_px: int) -> OverviewLevel:
+    def _select_overview_level(self, request: WindowRequest) -> OverviewLevel:
+        span = max(1, request.end - request.start)
+        desired_local_buckets = max(
+            1,
+            min(span, math.ceil(request.width_px * PYRAMID_VIEWPORT_OVERSAMPLE)),
+        )
         for level in self._overview_levels:
-            if level.bucket_count >= width_px:
+            local_bucket_estimate = math.ceil((span / self.total_samples) * level.bucket_count)
+            if local_bucket_estimate >= desired_local_buckets:
                 return level
         return self._overview_levels[-1]
 
@@ -517,7 +534,7 @@ class TraceDataService:
         source: str,
         cache_status: str | None = None,
     ) -> dict[str, Any]:
-        level = self._select_overview_level(request.width_px)
+        level = self._select_overview_level(request)
         traces = []
         total_span = max(1, self.total_samples)
         start_index = max(0, math.floor((request.start / total_span) * level.bucket_count))

@@ -125,6 +125,20 @@ class TraceViewerServerTests(unittest.TestCase):
         self.assertEqual(trace_viewer_server.detail_mode_for_window(1000, 500), "raw")
         self.assertEqual(trace_viewer_server.detail_mode_for_window(5000, 500), "envelope")
 
+    def test_pyramid_level_selection_gets_finer_as_span_narrows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
+            service = trace_viewer_server.TraceDataService(recording_path)
+
+            full_level = service._select_overview_level(
+                trace_viewer_server.WindowRequest(start=0, end=4000, width_px=200, channels=(0, 1))
+            )
+            narrow_level = service._select_overview_level(
+                trace_viewer_server.WindowRequest(start=1000, end=1400, width_px=200, channels=(0, 1))
+            )
+
+            self.assertGreater(narrow_level.bucket_count, full_level.bucket_count)
+
     def test_validate_bind_host_rejects_non_loopback_without_allow_remote(self) -> None:
         trace_viewer_server.validate_bind_host("127.0.0.1", allow_remote=False)
         with self.assertRaises(SystemExit):
@@ -156,6 +170,7 @@ class TraceViewerServerTests(unittest.TestCase):
             metadata = service.metadata()
             self.assertEqual(metadata["channels"], 4)
             self.assertEqual(metadata["default_channels"], [0, 1, 2, 3])
+            self.assertEqual(metadata["default_window"], {"start": 1975, "end": 2025})
             self.assertEqual(metadata["current_offset"], 0.0)
             self.assertEqual(metadata["current_count_min"], -32768)
             self.assertEqual(metadata["current_count_max"], 32767)

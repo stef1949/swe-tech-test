@@ -1,7 +1,7 @@
 const state = {
   metadata: null,
   channels: [],
-  scaleMode: "auto",
+  scaleMode: "shared",
   viewStart: 0,
   viewEnd: 0,
   overviewData: null,
@@ -34,6 +34,8 @@ const windowInput = document.getElementById("windowInput");
 const jumpBtn = document.getElementById("jumpBtn");
 const applyChannelsBtn = document.getElementById("applyChannelsBtn");
 const channelGrid = document.getElementById("channelGrid");
+const panLeftBtn = document.getElementById("panLeftBtn");
+const panRightBtn = document.getElementById("panRightBtn");
 const scaleAutoBtn = document.getElementById("scaleAutoBtn");
 const scaleSharedBtn = document.getElementById("scaleSharedBtn");
 
@@ -253,6 +255,7 @@ function updateLabels() {
     sourceLabel.textContent = "-";
   }
   updateBrush();
+  updatePanButtonState();
 }
 
 function updateBrush() {
@@ -264,6 +267,14 @@ function updateBrush() {
   const width = ((state.viewEnd - state.viewStart) / total) * 100;
   overviewBrush.style.left = `${left}%`;
   overviewBrush.style.width = `${Math.max(width, 0.25)}%`;
+}
+
+function updatePanButtonState() {
+  if (!state.metadata) {
+    return;
+  }
+  panLeftBtn.disabled = state.viewStart <= 0;
+  panRightBtn.disabled = state.viewEnd >= state.metadata.total_samples;
 }
 
 async function fetchJson(path, controller) {
@@ -920,7 +931,11 @@ function setWindow(centerSamples, spanSamples) {
 
 function pan(factor) {
   const span = state.viewEnd - state.viewStart;
-  const shift = Math.max(1, Math.round(span * factor));
+  const direction = Math.sign(factor);
+  if (direction === 0) {
+    return;
+  }
+  const shift = direction * Math.max(1, Math.round(Math.abs(span * factor)));
   setWindow(Math.round((state.viewStart + state.viewEnd) / 2) + shift, span);
 }
 
