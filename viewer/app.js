@@ -1,5 +1,6 @@
 const state = {
   metadata: null,
+  apiBase: null,
   channels: [],
   scaleMode: "shared",
   viewStart: 0,
@@ -52,7 +53,7 @@ const COLORS = [
 const DRAG_REFRESH_INTERVAL_MS = 120;
 const DETAIL_BUFFER_MARGIN_RATIO = 1;
 const DETAIL_BUFFER_REFRESH_MARGIN_RATIO = 0.3;
-const TRACE_BINARY_CONTENT_TYPE = "application/vnd.traceviewer.binary";
+const TRACE_BINARY_CONTENT_TYPE = "application/vnd.nanopore-trace.v1+binary";
 const TRACE_BINARY_MAGIC = "TVB1";
 const textDecoder = new TextDecoder();
 
@@ -88,7 +89,22 @@ function formatModeLabel(mode) {
 }
 
 function formatSourceLabel(source) {
-  return source === "pyramid" ? "Summary Pyramid" : "Chunk Slice";
+  if (source === "overview_pyramid") {
+    return "Overview Pyramid";
+  }
+  if (source === "envelope_pyramid") {
+    return "Envelope Pyramid";
+  }
+  if (source === "envelope_slice") {
+    return "Envelope Slice";
+  }
+  if (source === "envelope_tile") {
+    return "Envelope Tile";
+  }
+  if (source === "raw_window") {
+    return "Raw Window";
+  }
+  return source || "-";
 }
 
 function applyScaleModeUi() {
@@ -278,10 +294,13 @@ function updatePanButtonState() {
 }
 
 async function fetchJson(path, controller) {
-  const response = await fetch(path, { signal: controller.signal });
+  const response = await fetch(path, {
+    signal: controller.signal,
+    headers: { Accept: "application/json" },
+  });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed with ${response.status}`);
+    throw new Error(payload.detail || payload.error || `Request failed with ${response.status}`);
   }
   return response.json();
 }
@@ -354,10 +373,13 @@ function parseBinaryTracePayload(buffer) {
 }
 
 async function fetchTracePayload(path, controller) {
-  const response = await fetch(path, { signal: controller.signal });
+  const response = await fetch(path, {
+    signal: controller.signal,
+    headers: { Accept: TRACE_BINARY_CONTENT_TYPE },
+  });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed with ${response.status}`);
+    throw new Error(payload.detail || payload.error || `Request failed with ${response.status}`);
   }
 
   const contentType = response.headers.get("content-type") || "";
@@ -374,8 +396,9 @@ function queryString(params) {
 }
 
 async function loadMetadata() {
-  const metadata = await fetchJson("/api/metadata", new AbortController());
+  const metadata = await fetchJson("/v1/recordings/active/metadata", new AbortController());
   state.metadata = metadata;
+  state.apiBase = metadata.revisioned_api_base;
   state.channels = metadata.default_channels;
   state.viewStart = metadata.default_window.start;
   state.viewEnd = metadata.default_window.end;
@@ -409,13 +432,10 @@ async function refreshOverview() {
   const controller = new AbortController();
   state.pendingOverview = controller;
   const params = queryString({
-    start: "0",
-    end: String(state.metadata.total_samples),
-    width_px: String(overviewCanvas.width),
+    viewport_px: String(overviewCanvas.width),
     channels: state.channels.join(","),
-    format: "binary",
   });
-  const data = await fetchTracePayload(`/api/overview?${params}`, controller);
+  const data = await fetchTracePayload(`${state.apiBase}/overview?${params}`, controller);
   if (requestId !== state.overviewRequestId) {
     return;
   }
@@ -433,14 +453,14 @@ async function refreshDetail() {
   setStatus("loading", "Loading");
   const requestWindow = buildDetailRequestWindow();
   const params = queryString({
-    start: String(Math.round(requestWindow.start)),
-    end: String(Math.round(requestWindow.end)),
-    width_px: String(requestWindow.widthPx),
+    start_sample: String(Math.round(requestWindow.start)),
+    end_sample: String(Math.round(requestWindow.end)),
+    viewport_px: String(requestWindow.widthPx),
     channels: state.channels.join(","),
-    format: "binary",
+    representation: "auto",
   });
   try {
-    const data = await fetchTracePayload(`/api/detail?${params}`, controller);
+    const data = await fetchTracePayload(`${state.apiBase}/detail?${params}`, controller);
     if (requestId !== state.detailRequestId) {
       return;
     }

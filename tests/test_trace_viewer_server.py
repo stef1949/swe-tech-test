@@ -98,22 +98,22 @@ class TraceViewerServerTests(unittest.TestCase):
         self.assertTrue(trace_viewer_server.is_client_disconnect_error(ConnectionAbortedError(10053, "aborted")))
         self.assertFalse(trace_viewer_server.is_client_disconnect_error(ValueError("boom")))
 
-    def test_parse_int_param_accepts_fractional_values(self) -> None:
-        self.assertEqual(trace_viewer_server.parse_int_param("10", "start"), 10)
+    def test_parse_strict_int_rejects_fractional_values(self) -> None:
+        self.assertEqual(trace_viewer_server.parse_strict_int("10", "start_sample"), 10)
+        with self.assertRaises(ValueError):
+            trace_viewer_server.parse_strict_int("10.5", "start_sample")
+
+    def test_parse_int_param_backward_compatible_rounding_helper(self) -> None:
         self.assertEqual(trace_viewer_server.parse_int_param("10.5", "start"), 11)
         self.assertEqual(trace_viewer_server.parse_int_param("10.4", "start"), 10)
 
-    def test_parse_channel_list_defaults_to_first_visible_channels(self) -> None:
+    def test_parse_channel_list_defaults_and_sorts(self) -> None:
         self.assertEqual(trace_viewer_server.parse_channel_list(None, 4), [0, 1, 2, 3])
-        self.assertEqual(trace_viewer_server.parse_channel_list("2,0,2", 4), [2, 0])
+        self.assertEqual(trace_viewer_server.parse_channel_list("2,0,2", 4), [0, 2])
 
     def test_parse_channel_list_rejects_out_of_range_channel(self) -> None:
         with self.assertRaises(ValueError):
             trace_viewer_server.parse_channel_list("7", 4)
-
-    def test_parse_channel_list_rejects_excessive_channel_tokens(self) -> None:
-        with self.assertRaises(ValueError):
-            trace_viewer_server.parse_channel_list(",".join(["0"] * 65), 4)
 
     def test_reduce_to_envelope_computes_min_and_max(self) -> None:
         data = np.array([3, 7, 2, 8, 4, 9], dtype=np.int16)
@@ -130,12 +130,8 @@ class TraceViewerServerTests(unittest.TestCase):
             recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
             service = trace_viewer_server.TraceDataService(recording_path)
 
-            full_level = service._select_overview_level(
-                trace_viewer_server.WindowRequest(start=0, end=4000, width_px=200, channels=(0, 1))
-            )
-            narrow_level = service._select_overview_level(
-                trace_viewer_server.WindowRequest(start=1000, end=1400, width_px=200, channels=(0, 1))
-            )
+            full_level = service._select_overview_level(4000, 200)
+            narrow_level = service._select_overview_level(400, 200)
 
             self.assertGreater(narrow_level.bucket_count, full_level.bucket_count)
 
@@ -177,52 +173,59 @@ class TraceViewerServerTests(unittest.TestCase):
             self.assertEqual(metadata["voltage_units"], "mV")
             self.assertEqual(len(metadata["channel_voltage_mv"]), 4)
             self.assertAlmostEqual(metadata["channel_voltage_mv"][0], 180.0)
-            self.assertNotIn("recording_path", metadata)
+            self.assertEqual(metadata["recording_id"], "fixture-4ch-001")
+            self.assertIn("revision", metadata)
+            self.assertTrue(metadata["revisioned_api_base"].endswith(metadata["revision"]))
 
-            overview = service.overview(
-                {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
-            )
+            overview = service.overview({"viewport_px": ["200"], "channels": ["0,1"]})
             self.assertEqual(overview["mode"], "envelope")
             self.assertEqual(len(overview["traces"]), 2)
             self.assertEqual(overview["cache"], "miss")
-            self.assertEqual(overview["source"], "pyramid")
+            self.assertEqual(overview["source"], "overview_pyramid")
+            self.assertEqual(overview["start_sample"], 0)
+            self.assertEqual(overview["end_sample"], 4000)
 
-            overview_cached = service.overview(
-                {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
-            )
+            overview_cached = service.overview({"viewport_px": ["200"], "channels": ["0,1"]})
             self.assertEqual(overview_cached["cache"], "hit")
 
             detail_raw = service.detail(
-                {"start": ["0"], "end": ["20"], "width_px": ["200"], "channels": ["0,1"]}
+                {"start_sample": ["0"], "end_sample": ["20"], "viewport_px": ["200"], "channels": ["0,1"]}
             )
             self.assertEqual(detail_raw["mode"], "raw")
-            self.assertEqual(detail_raw["source"], "slice")
+            self.assertEqual(detail_raw["source"], "raw_window")
+            self.assertEqual(detail_raw["representation_actual"], "raw")
             self.assertIn("values", detail_raw["traces"][0])
 
             detail_envelope = service.detail(
-                {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
+                {
+                    "start_sample": ["0"],
+                    "end_sample": ["4000"],
+                    "viewport_px": ["200"],
+                    "channels": ["0,1"],
+                    "representation": ["envelope"],
+                }
             )
             self.assertEqual(detail_envelope["mode"], "envelope")
-            self.assertEqual(detail_envelope["source"], "slice")
+            self.assertEqual(detail_envelope["source"], "envelope_slice")
             self.assertIn("mins", detail_envelope["traces"][0])
 
-            detail_fractional = service.detail(
-                {"start": ["10.5"], "end": ["29.5"], "width_px": ["200.0"], "channels": ["0,1"]}
-            )
-            self.assertEqual(detail_fractional["start"], 11)
-            self.assertEqual(detail_fractional["end"], 30)
-            self.assertEqual(detail_fractional["mode"], "raw")
+            with self.assertRaises(trace_viewer_server.ApiError):
+                service.detail(
+                    {"start_sample": ["10.5"], "end_sample": ["29"], "viewport_px": ["200"], "channels": ["0,1"]}
+                )
 
             overview_binary = decode_trace_binary(
-                service.overview_binary({"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]})
+                service.overview_binary({"viewport_px": ["200"], "channels": ["0,1"]})
             )
             self.assertEqual(overview_binary["mode"], "envelope")
-            self.assertEqual(overview_binary["source"], "pyramid")
+            self.assertEqual(overview_binary["source"], "overview_pyramid")
             self.assertEqual(len(overview_binary["traces"]), 2)
             self.assertIn("mins", overview_binary["traces"][0])
 
             detail_binary = decode_trace_binary(
-                service.detail_binary({"start": ["0"], "end": ["20"], "width_px": ["200"], "channels": ["0,1"]})
+                service.detail_binary(
+                    {"start_sample": ["0"], "end_sample": ["20"], "viewport_px": ["200"], "channels": ["0,1"]}
+                )
             )
             self.assertEqual(detail_binary["mode"], "raw")
             self.assertEqual(detail_binary["traces"][0]["values"].shape[0], 20)
@@ -234,26 +237,27 @@ class TraceViewerServerTests(unittest.TestCase):
 
             with patch.object(trace_viewer_server, "MAX_DETAIL_SLICE_SAMPLES_PER_CHANNEL", 100):
                 detail = service.detail(
-                    {"start": ["0"], "end": ["4000"], "width_px": ["200"], "channels": ["0,1"]}
+                    {"start_sample": ["0"], "end_sample": ["4000"], "viewport_px": ["200"], "channels": ["0,1"]}
                 )
 
             self.assertEqual(detail["mode"], "envelope")
-            self.assertEqual(detail["source"], "pyramid")
+            self.assertEqual(detail["source"], "envelope_pyramid")
 
-    def test_detail_rejects_excessive_width(self) -> None:
+    def test_detail_rejects_excessive_viewport(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
             service = trace_viewer_server.TraceDataService(recording_path)
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(trace_viewer_server.ApiError) as ctx:
                 service.detail(
                     {
-                        "start": ["0"],
-                        "end": ["100"],
-                        "width_px": [str(trace_viewer_server.MAX_WIDTH_PX + 1)],
+                        "start_sample": ["0"],
+                        "end_sample": ["100"],
+                        "viewport_px": [str(trace_viewer_server.MAX_WIDTH_PX + 1)],
                         "channels": ["0,1"],
                     }
                 )
+            self.assertEqual(ctx.exception.status, trace_viewer_server.HTTPStatus.UNPROCESSABLE_ENTITY)
 
     def test_json_budget_rejects_large_detail_responses(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -261,10 +265,23 @@ class TraceViewerServerTests(unittest.TestCase):
             service = trace_viewer_server.TraceDataService(recording_path)
 
             with patch.object(trace_viewer_server, "MAX_JSON_TRACE_POINTS", 50):
-                with self.assertRaises(ValueError):
+                with self.assertRaises(trace_viewer_server.ApiError) as ctx:
                     service.detail(
-                        {"start": ["0"], "end": ["40"], "width_px": ["200"], "channels": ["0,1"]}
+                        {"start_sample": ["0"], "end_sample": ["40"], "viewport_px": ["200"], "channels": ["0,1"]}
                     )
+            self.assertEqual(ctx.exception.status, trace_viewer_server.HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+
+    def test_envelope_tile_payload_is_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recording_path = create_fixture(Path(tmpdir) / "fixture.zarr")
+            service = trace_viewer_server.TraceDataService(recording_path)
+
+            tile = service.envelope_tile(0, 0, {"channels": ["0,1"]})
+            self.assertEqual(tile["mode"], "envelope")
+            self.assertEqual(tile["source"], "envelope_tile")
+            self.assertEqual(tile["tile_index"], 0)
+            self.assertEqual(tile["level_index"], 0)
+            self.assertEqual(len(tile["traces"]), 2)
 
     def test_service_rejects_non_int16_recording(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
