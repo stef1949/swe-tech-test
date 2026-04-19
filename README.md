@@ -343,4 +343,4 @@ The server enforces:
 
 ## Short summary
 
-The current server is still a pragmatic single-process prototype, but it now has a cleaner production-shaped API contract: revisioned trace reads, explicit raw versus envelope behavior, immutable overview and tile resources, cache validators, diagnostics endpoints, sidecar-backed pyramid persistence, and a browser client that bootstraps from metadata and keeps stale traces visible while fresh requests are in flight.
+The current server is still pragmatic single-process prototype, but has a production-shaped API structure: revisioned trace reads, explicit raw versus envelope behavior, immutable overview and tile resources, cache validators, diagnostics endpoints, sidecar-backed pyramid persistence, and a browser client that bootstraps from metadata and keeps stale traces visible while fresh requests are in flight.
