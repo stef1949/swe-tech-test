@@ -835,10 +835,12 @@ function renderOverview() {
 }
 
 function renderDetail() {
-  if (!canRenderVisibleDetailFromBuffer()) {
+  if (!state.detailData) {
     return;
   }
+
   clearDetailPreview();
+
   const ctx = detailCanvas.getContext("2d");
   clearCanvas(ctx, detailCanvas);
   drawGrid(ctx, detailCanvas, state.detailData.traces.length);
@@ -961,31 +963,48 @@ function pan(factor) {
 
 function zoom(factor, anchorRatio = 0.5) {
   cancelPendingDetailRequest();
+
   const oldStart = state.viewStart;
   const oldEnd = state.viewEnd;
   const oldSpan = oldEnd - oldStart;
-  const span = state.viewEnd - state.viewStart;
-  const nextSpan = Math.max(secondsToSamples(0.2), Math.round(span * factor));
-  const anchorSample = state.viewStart + span * anchorRatio;
+  // const span = state.viewEnd - state.viewStart;
+
+  const nextSpan = Math.max(
+    secondsToSamples(0.2),
+     Math.round(oldSpan * factor)
+    );
+
+  const anchorSample = oldStart + oldSpan * anchorRatio;
   const start = anchorSample - nextSpan * anchorRatio;
   const next = clampWindow(Math.round(start), Math.round(start + nextSpan));
+  
   state.viewStart = next.start;
   state.viewEnd = next.end;
+
   const newSpan = Math.max(1, next.end - next.start);
-  const renderedFromBuffer = renderDetailFromBufferIfAvailable();
-  if (!renderedFromBuffer && newSpan < oldSpan) {
+  
+  const renderedFromBuffer = renderDetailFromBufferIfAvailable(); // FIX: Imediate redraw on zoom change
+ 
+  if (!renderedFromBuffer) {
     const displayWidthPx = detailCanvas.getBoundingClientRect().width;
     const scaleX = oldSpan / newSpan;
     const offsetPx = ((oldStart - next.start) / newSpan) * displayWidthPx;
+
     setDetailPreviewTransform(offsetPx, scaleX);
-  } else if (!renderedFromBuffer) {
-    clearDetailPreview();
   }
+
   syncInputs();
   updateLabels();
+  updateBrush();
+
+  requestAnimationFrame(() => {
+  refreshDetail();
+  });
+  /*
   if (detailBufferNeedsRefresh()) {
     scheduleDetailRefresh(90);
   }
+  */
 }
 
 function attachControls() {

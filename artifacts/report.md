@@ -2,12 +2,12 @@
 
 Generated from `C:\Users\stef1\Downloads\swe-tech-test\swe-tech-test\mock48_2500hz_1.5h.zarr` on 2026-04-14T11:55:03+00:00.
 
-## Recording Facts
+## Recording Data
 
 - Device: `mock-48ch-001`
 - Channels: 48
-- Sample rate: 2500.0 Hz
-- Duration: 5400 s
+- Sample rate: 2500.0Hz
+- Duration: 5400s
 - Current scale: 0.06103515625000001 pA per int16 unit
 - Voltage scale: 0.0625 mV per int16 unit
 - Raw signal volume across both arrays: 2.41 GiB
@@ -51,7 +51,7 @@ Service contracts:
 Decision rules:
 - Use raw samples only when the requested window is at or below 1.2 s per channel (3000 samples at 2.5 samples/pixel).
 - Switch to precomputed or on-demand min/max envelopes for broader windows to cap payload size and improve cacheability.
-- Optimize current_data first; treat voltage_data as metadata-rich but latency-insensitive.
+- Optimize `current_data` first; treat `voltage_data` as metadata-rich but latency-insensitive.
 
 Viewport math at 1200 px:
 - `1s`: 2.08 samples/pixel, raw 48-channel payload 234.38 KiB, envelope payload 225.00 KiB, recommended `raw`.
@@ -80,5 +80,5 @@ Key risks:
 ## Phased Implementation Plan
 
 1. V1: metadata endpoint, detail reads, one overview envelope level, and optimistic client swap without blank states.
-2. V2: multiresolution pyramid generation, cache headers, and prefetching adjacent overview/detail windows.
+2. V2: Explicit multires pyramid generation, cache headers, and prefetching of adjacent overview/detail windows.
 3. V3: observability, backpressure controls, SLO-driven tuning, and admission limits for expensive multi-channel queries.

@@ -132,6 +132,7 @@ flowchart LR
 - Benchmark direct S3 reads instead of local-disk reads
 - Measure browser-side binary decode and draw costs
 - Estimate pyramid build time and storage cost per recording
+- Migration to gRPC (Greater capacity)
 
 ---
 
@@ -141,4 +142,4 @@ flowchart LR
 - The mock data materially shaped the design:
   `current_data` is the hot path, `voltage_data` is almost free, and 10-second windows are already envelope territory
 - Ship a narrow, evidence-backed first version rather than a broad speculative platform
-- Success means no blank frames, common interactions under about 150 ms, and predictable cost per recording
+- Success means no blank frames, common interactions under ~150 ms, and predictable cost per recording
